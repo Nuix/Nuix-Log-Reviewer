@@ -191,7 +191,7 @@
     <Resource Include="cancel.png" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="DependencyLicenses\OokiiDialogs.Wpf-License.TXT">
+    <None Include="DependencyLicenses\OokiiDialogs.Wpf-LICENSE.TXT">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
