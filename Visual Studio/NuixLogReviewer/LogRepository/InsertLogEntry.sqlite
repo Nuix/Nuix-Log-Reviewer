@@ -1,0 +1,2 @@
+﻿INSERT INTO LogEntry (ID,LineNumber,FileName,TimeStamp,Channel,Elapsed,Level,Source,Content,Flags)
+VALUES (@id,@linenumber,@filename,@timestamp,@channel,@elapsed,@level,@source,@content,@flags);

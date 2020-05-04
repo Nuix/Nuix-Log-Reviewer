@@ -1,0 +1,18 @@
+﻿SELECT
+le.ID,
+LineNumber,
+fn.Value AS FileName,
+fn.ID AS FileID,
+TimeStamp,
+ch.Value AS Channel,
+Elapsed,
+lvl.Value AS Level,
+sc.Value AS Source,
+Content,
+Flags
+FROM LogEntry AS le
+JOIN FileName AS fn ON fn.ID = le.FileName
+JOIN Channel AS ch ON ch.ID = le.Channel
+JOIN LEVEL AS lvl ON lvl.ID = le.Level
+JOIN Source AS sc ON sc.ID = le.Source
+WHERE le.ID in ({0}) ORDER BY TimeStamp ASC

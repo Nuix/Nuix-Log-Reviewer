@@ -1,0 +1,73 @@
+﻿<UserControl x:Class="NuixLogReviewer.GUI.LogEntryViewer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:local="clr-namespace:NuixLogReviewer.GUI"
+             mc:Ignorable="d" 
+             d:DesignHeight="450" d:DesignWidth="1920">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="8"/>
+            <ColumnDefinition Width="3*"/>
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Label Content="TimeStamp" Grid.Row="0" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtTimeStamp" IsReadOnly="True" Grid.Row="0" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Elapsed" Grid.Row="1" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtElapsed" IsReadOnly="True" Grid.Row="1" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Level" Grid.Row="2" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtLevel" IsReadOnly="True" Grid.Row="2" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Line #" Grid.Row="3" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtLineNumber" IsReadOnly="True" Grid.Row="3" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Source" Grid.Row="4" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtSource" IsReadOnly="True" Grid.Row="4" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Channel" Grid.Row="5" Grid.Column="0" HorizontalContentAlignment="Right"/>
+            <TextBox x:Name="txtChannel" IsReadOnly="True" Grid.Row="5" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
+
+            <Label Content="Assigned Flags" Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" HorizontalContentAlignment="Left"/>
+            <ListView x:Name="flagList" Grid.Row="7" Grid.ColumnSpan="2"/>
+        </Grid>
+
+        <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Right" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"/>
+
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="auto"/>
+            </Grid.RowDefinitions>
+            <DockPanel  Grid.Row="0" LastChildFill="True">
+                <Label Content="File Path"/>
+                <TextBox x:Name="txtFilePath" IsReadOnly="True"  FontFamily="Consolas" VerticalContentAlignment="Center"/>
+            </DockPanel>
+            <StackPanel Grid.Row="2" Orientation="Horizontal">
+                <CheckBox x:Name="checkWrapText" Content="Wrap Text" IsChecked="True"/>
+            </StackPanel>
+            <TextBox Grid.Row="1" x:Name="txtContent" FontFamily="Consolas" IsReadOnly="true" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Visible" TextWrapping="Wrap"/>
+        </Grid>
+        
+    </Grid>
+</UserControl>
