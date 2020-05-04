@@ -7,7 +7,7 @@ View the GitHub project [here](https://github.com/Nuix/Nuix-Log-Reviewer) or dow
 
 # Overview
 
-This is a [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48) application which provides a quick and easy way to parse, index and search Nuix logs files.
+This is a [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48) application which provides a quick and easy way to parse, index and search log files produced by [Nuix Workstation](https://www.nuix.com/products/nuixworkstation) (including worker logs).
 
 ![image](https://user-images.githubusercontent.com/11775738/81017035-67325d00-8e16-11ea-91df-4b14abd1a41a.png)
 
