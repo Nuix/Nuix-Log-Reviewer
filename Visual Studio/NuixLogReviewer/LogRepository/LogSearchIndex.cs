@@ -61,8 +61,8 @@ namespace NuixLogReviewer.LogRepository
                 analyzer = getAnalyzer();
                 luceneDirectory = FSDirectory.Open(IndexDirectory);
                 writer = new IndexWriter(luceneDirectory, analyzer, IndexWriter.MaxFieldLength.UNLIMITED);
-                writer.MergeFactor = 40;
-                writer.SetRAMBufferSizeMB(512);
+                writer.MergeFactor = 30;
+                writer.SetRAMBufferSizeMB(128);
 
                 InWriteMode = true;
             }
@@ -120,8 +120,9 @@ namespace NuixLogReviewer.LogRepository
                 levelField.SetValue(entry.Level);
                 sourceField.SetValue(entry.Source);
                 contentField.SetValue(entry.Content);
-                string dateString = entry.TimeStamp.ToString("yyyyMMdd");
-                long date = long.Parse(dateString);
+                //string dateString = entry.TimeStamp.ToString("yyyyMMdd");
+                //long date = long.Parse(dateString);
+                long date = (entry.TimeStamp.Year * 10000) + (entry.TimeStamp.Month * 100) + entry.TimeStamp.Day;
                 dateField.SetLongValue(date);
                 flagsField.SetValue(String.Join(" ", entry.Flags));
                 writer.AddDocument(doc);
@@ -133,8 +134,6 @@ namespace NuixLogReviewer.LogRepository
             // Lucene seems to be picky about lower case for some things?
             Regex notFix = new Regex(@"\bnot\b", RegexOptions.Compiled);
             queryString = notFix.Replace(queryString, "NOT");
-
-            List<long> result = new List<long>();
 
             // Emtpy query is all items, we return a special collection that pretends to be a full list of ID values
             // but that is actually just based on the range of possible values.
@@ -151,11 +150,11 @@ namespace NuixLogReviewer.LogRepository
 
                 var hitsFound = searcher.Search(query, int.MaxValue);
 
-                List<long> ids = new List<long>(hitsFound.TotalHits);
+                long[] ids = new long[hitsFound.TotalHits];
                 for (int i = 0; i < hitsFound.TotalHits; i++)
                 {
                     Document doc = searcher.Doc(hitsFound.ScoreDocs[i].Doc);
-                    ids.Add(long.Parse(doc.Get("id")));
+                    ids[i] = long.Parse(doc.Get("id"));
                 }
                 luceneDirectory.Dispose();
                 searcher.Dispose();
