@@ -29,11 +29,11 @@ For example the following log entry:
 2020-04-29 13:45:01.031 -0700 [AWT-EventQueue-0] 59133 INFO  com.nuix.investigator.evidence.add.i - Spawning worker.
 ```
 
-Would may be indexed as follows:
+Would be indexed as follows:
 
 | Field | Value |
 |-------|-------|
-| `line` | `56` |
+| `line` | `56` (or whatever line this was on) |
 | `channel` | `AWT-EventQueue-0` |
 | `level` | `INFO` |
 | `source` | `com.nuix.investigator.evidence.add.i` |
