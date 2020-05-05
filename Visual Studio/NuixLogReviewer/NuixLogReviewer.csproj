@@ -125,6 +125,7 @@
       <DependentUpon>LogEntryViewer.xaml</DependentUpon>
     </Compile>
     <Compile Include="LogRepository\AllEntriesIDList.cs" />
+    <Compile Include="LogRepository\Classifiers\MultiLineClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\NuixPackageClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\DiskSpaceMessageClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\IEntryClassifier.cs" />
