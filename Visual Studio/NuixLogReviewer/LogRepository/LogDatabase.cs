@@ -138,7 +138,12 @@ namespace NuixLogReviewer.LogRepository
             return result;
         }
 
-        public List<long> SortIds(IList<long> unsortedIds, string query = "SELECT ID FROM LogEntry WHERE ID IN (SELECT ID FROM IDList) ORDER BY TimeStamp ASC, LineNumber ASC")
+        /// <summary>
+        /// Sorts list of IDs using database information to order them in TimeSTamp and LineNumber order
+        /// </summary>
+        /// <param name="unsortedIds"></param>
+        /// <returns></returns>
+        public IList<long> SortIds(IList<long> unsortedIds)
         {
             ExecuteNonQuery("CREATE TABLE IDList ( ID INTEGER );");
 
@@ -151,15 +156,16 @@ namespace NuixLogReviewer.LogRepository
             }
             inserter.Complete();
 
-            List<long> sortedIds =
-            ExecuteReader<long>(query, (reader) =>
+            ExecuteNonQuery("CREATE INDEX IDX_TempIDList ON IDList (ID);");
+
+            string retrievalQuery = "SELECT ID FROM LogEntry WHERE ID IN (SELECT ID FROM IDList) ORDER BY TimeStamp ASC, LineNumber ASC";
+            long[] sortedIds =
+            ExecuteReader<long>(retrievalQuery, (reader) =>
             {
                 return (long)reader["ID"];
-            }).ToList();
+            }).ToArray();
 
             ExecuteNonQuery("DROP TABLE IDList;");
-
-            //string debug = "SELECT * FROM LogEntry WHERE ID IN (" + string.Join(",", sortedIds) + ")";
 
             return sortedIds;
         }
