@@ -57,7 +57,6 @@ namespace NuixLogReviewer.LogRepository
             builder.CacheSize = 10000;
             builder.PageSize = 4096;
             builder.Pooling = false;
-
             builder.SyncMode = SynchronizationModes.Off;
 
             return builder.ToString();
@@ -190,9 +189,9 @@ namespace NuixLogReviewer.LogRepository
         /// calls to FlushAllBatchInserters() and ReinitializeAllBatchInserters()
         /// </summary>
         /// <returns></returns>
-        public SQLiteBatchInserter CreateBatchInserter()
+        public SQLiteBatchInserter CreateBatchInserter(int commitFrequency=10000)
         {
-            SQLiteBatchInserter result = new SQLiteBatchInserter(this);
+            SQLiteBatchInserter result = new SQLiteBatchInserter(this, commitFrequency);
             batchInserters.Add(result);
             return result;
         }
