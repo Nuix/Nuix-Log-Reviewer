@@ -23,7 +23,7 @@ namespace NuixLogReviewer.LogRepository
 
         public static string TimestampExpression
         {
-            get { return @"(?<timestamp>20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+[\+\-]?[0-9]{4})\s+"; }
+            get { return @"(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+[\+\-]?\d{4})\s+"; }
         }
 
         public static string ChannelExpression
@@ -33,12 +33,12 @@ namespace NuixLogReviewer.LogRepository
 
         public static string ElapsedExpression
         {
-            get { return @"(?<elapsed>[0-9]+)\s"; }
+            get { return @"(?<elapsed>\d+)\s"; }
         }
 
         public static string LevelExpression
         {
-            get { return @"(?<level>[A-Z]+)\s+"; }
+            get { return @"(?<level>(TRACE|DEBUG|INFO|WARN|ERROR))\s+"; }
         }
 
         public static string SourceExpression
@@ -76,13 +76,10 @@ namespace NuixLogReviewer.LogRepository
                 yield break;
             }
 
-            CultureInfo cultures = new CultureInfo("en-US");
+            CultureInfo culture = new CultureInfo("en-US");
 
-            //int fileStreamBufferSize = 1024 * 4;
-            int streamReaderBufferSize = 1024 * 1024 * 32;
+            int streamReaderBufferSize = 1024 * 1024 * 4;
 
-            //using (FileStream fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, fileStreamBufferSize, FileOptions.SequentialScan))
-            //using (BufferedStream bs = new BufferedStream(fs, bufferSize))
             using (StreamReader sr = new StreamReader(FilePath, Encoding.UTF8, false, streamReaderBufferSize))
             {
                 int lineNumber = 0;
@@ -90,9 +87,8 @@ namespace NuixLogReviewer.LogRepository
                 NuixLogEntry current = null;
                 StringBuilder currentContent = new StringBuilder();
 
-                while (!sr.EndOfStream)
+                while ((line = sr.ReadLine()) != null)
                 {
-                    line = sr.ReadLine();
                     lineNumber++;
 
                     // Since a log entry in the format understood by this code starts with a date, and that date should start with 20xx we
@@ -107,31 +103,22 @@ namespace NuixLogReviewer.LogRepository
                         {
                             if (current != null)
                             {
-                                current.Content = currentContent.ToString();
+                                current.Content = currentContent.ToString().Trim();
                                 currentContent.Clear();
                                 yield return current;
                             }
 
                             current = new NuixLogEntry();
 
-                            DateTime parsedTimeStamp = DateTime.MinValue;
                             TimeSpan parsedElapsed = TimeSpan.Zero;
 
                             current.LineNumber = lineNumber;
                             current.FilePath = FilePath;
                             current.FileName = Path.GetFileName(FilePath);
                             currentContent.AppendLine(parsed.Groups["content"].Value);
-                            if (DateTime.TryParse(parsed.Groups["timestamp"].Value, out parsedTimeStamp))
-                            {
-                                current.TimeStamp = DateTime.Parse(parsed.Groups["timestamp"].Value, cultures);
-                            }
-                            else
-                            {
-                                current.TimeStamp = DateTime.MinValue;
-                            }
-
+                            current.TimeStamp = DateTime.ParseExact(parsed.Groups["timestamp"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
                             current.Channel = parsed.Groups["channel"].Value.Trim();
-                            current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, cultures));
+                            current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
                             current.Level = String.Intern(parsed.Groups["level"].Value.Trim()); // Intern since we know there is a small set of possible values
                             current.Source = parsed.Groups["source"].Value.Trim();
                         }
@@ -150,6 +137,7 @@ namespace NuixLogReviewer.LogRepository
                     }
                 }
 
+                // Make sure to kick out the final entry as well!
                 if (current != null)
                 {
                     current.Content = currentContent.ToString().Trim();
