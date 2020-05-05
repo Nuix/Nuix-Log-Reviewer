@@ -59,6 +59,7 @@ namespace NuixLogReviewer.LogRepository
             pb.BroadcastStatus("Dropping indexes...");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_EntryID;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_TimeStamp;");
+            Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LineNumber;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_FilenameID;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_ChannelID;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LevelID;");
@@ -82,6 +83,7 @@ namespace NuixLogReviewer.LogRepository
             pb.BroadcastStatus("Rebuilding indexes...");
             Database.ExecuteNonQuery("CREATE INDEX IDX_EntryID ON LogEntry (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_TimeStamp ON LogEntry (TimeStamp);");
+            Database.ExecuteNonQuery("CREATE INDEX IDX_LineNumber ON LogEntry (LineNumber);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_FilenameID ON FileName (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_ChannelID ON Channel (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_LevelID ON Level (ID);");
@@ -96,7 +98,7 @@ namespace NuixLogReviewer.LogRepository
         private long LoadLogFile(string logFile, long startingRecordCount, ProgressBroadcaster pb = null)
         {
             FileInfo logFileInfo = new FileInfo(logFile);
-            if(logFileInfo.Length < 1)
+            if (logFileInfo.Length < 1)
             {
                 // Skip 0 length files
                 return startingRecordCount;
@@ -111,8 +113,8 @@ namespace NuixLogReviewer.LogRepository
             long nextId = Database.GetHighestLogEntryID();
 
             NuixLogReader reader = new NuixLogReader(logFile);
-            
-            SQLiteBatchInserter batchInserter = Database.CreateBatchInserter();
+
+            SQLiteBatchInserter batchInserter = Database.CreateBatchInserter(1000);
             batchInserter.Begin(Database.GetEmbeddedSQL("NuixLogReviewer.LogRepository.InsertLogEntry.sqlite"));
 
             // Used for progress updates
@@ -125,7 +127,9 @@ namespace NuixLogReviewer.LogRepository
             BlockingCollection<NuixLogEntry> toClassify = new BlockingCollection<NuixLogEntry>();
             BlockingCollection<NuixLogEntry> toIndex = new BlockingCollection<NuixLogEntry>();
 
-            Task readerConsumer = new Task(new Action(() => {
+            // ==== Task Dedicated to Pulling Entries from Source ====
+            Task readerConsumer = new Task(new Action(() =>
+            {
                 foreach (var entry in reader)
                 {
                     toClassify.Add(entry);
@@ -133,10 +137,12 @@ namespace NuixLogReviewer.LogRepository
 
                 // Signal that was the last one
                 toClassify.Add(null);
- 
-            }));
 
-            Task classificationTask = new Task(new Action(() => {
+            }), TaskCreationOptions.LongRunning);
+
+            // ==== Classify Log Entries ====
+            Task classificationTask = new Task(new Action(() =>
+            {
                 while (true)
                 {
                     NuixLogEntry entry = toClassify.Take();
@@ -163,9 +169,11 @@ namespace NuixLogReviewer.LogRepository
 
                 // Signal that was the last one
                 toInsert.Add(null);
-            }));
+            }), TaskCreationOptions.LongRunning);
 
-            Task dbConsumer = new Task(new Action(() => {
+            // ==== Task Dedicated to Inserting to SQLite Database ====
+            Task dbConsumer = new Task(new Action(() =>
+            {
                 DateTime lastProgress = DateTime.Now;
 
                 while (true)
@@ -206,13 +214,14 @@ namespace NuixLogReviewer.LogRepository
                 {
                     toIndex.Add(null);
                 }
-            }));
+            }), TaskCreationOptions.LongRunning);
 
+            // ==== Series of Tasks Dedicated to Adding Entries to Lucene Index ====
             Task[] indexers = new Task[indexingConcurrency];
-
             for (int i = 0; i < indexingConcurrency; i++)
             {
-                Task indexConsumer = new Task(new Action(() => {
+                Task indexConsumer = new Task(new Action(() =>
+                {
                     while (true)
                     {
                         NuixLogEntry entry = toIndex.Take();
@@ -223,7 +232,7 @@ namespace NuixLogReviewer.LogRepository
                     }
 
                     pb.BroadcastProgress(recordCount);
-                }));
+                }), TaskCreationOptions.LongRunning);
                 indexers[i] = indexConsumer;
                 indexConsumer.Start();
             }
@@ -258,7 +267,7 @@ namespace NuixLogReviewer.LogRepository
             {
                 Ids = Database.SortIds(ids),
                 SourceRepository = this
-            },250);
+            }, 200);
 
             // For the given search result we want to be able to additionally report how many
             // are each log level
@@ -276,7 +285,7 @@ namespace NuixLogReviewer.LogRepository
                 result.ErrorEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:error", query));
                 result.DebugEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:debug", query));
             }
-            
+
             return result;
         }
 
@@ -284,7 +293,7 @@ namespace NuixLogReviewer.LogRepository
         {
             if (!RepoDisposed)
             {
-                Directory.Delete(RepoDirectory,true);
+                Directory.Delete(RepoDirectory, true);
                 RepoDisposed = true;
             }
         }
