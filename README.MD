@@ -18,7 +18,7 @@ Load one or more selected Nuix log files or a whole directory of Nuix log files 
 - `line`: Line number of the first line of a given log entry (an entry may span multiple lines).
 - `channel`
 - `level`: Log entry level (`TRACE`,`DEBUG`,`WARN`,`ERROR`,etc).
-- `source`
+- `source`: Typically the [Java Package](https://docs.oracle.com/javase/tutorial/java/concepts/package.html) and class name of the code which generated a given log entry.
 - `content`: The message part of the log entry, may span multiple lines.
 - `date`: Date of a given log entry.
 - `flag`: Classifications for log entries based on same basic classification logic.
