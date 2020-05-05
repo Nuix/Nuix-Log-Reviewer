@@ -60,6 +60,7 @@ The application performs basic classification of log entries.  Classifications a
 | `script` | Log entry's **Channel** value is `SCRIPT` |
 | `worker_log` | Log entry's source log file's path appears to be in a "job" sub directory (where workers usually record their logs for a given job). |
 | `worker_state` | Log entry's **Content** contains `Changing state`.  Helps find worker messages like `Changing state from PENDING to RUNNING` |
+| `multi_line` | Log entry spans multiple lines. |
 
 So if you were looking for log entries regarding memory, you might try searching for `flag:memory`.
 
