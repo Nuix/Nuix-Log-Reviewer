@@ -61,6 +61,9 @@ The application performs basic classification of log entries.  Classifications a
 | `worker_log` | Log entry's source log file's path appears to be in a "job" sub directory (where workers usually record their logs for a given job). |
 | `worker_state` | Log entry's **Content** contains `Changing state`.  Helps find worker messages like `Changing state from PENDING to RUNNING` |
 | `multi_line` | Log entry spans multiple lines. |
+| `process_killed` | Log entry's **Content** starts with `Killing current process...` |
+| `problem_processing_item` | Log entry's **Content** starts with `Problem processing item` |
+| `session_is_closed` | Logn entry's **Content** contains `The Session is closed` |
 
 So if you were looking for log entries regarding memory, you might try searching for `flag:memory`.
 
