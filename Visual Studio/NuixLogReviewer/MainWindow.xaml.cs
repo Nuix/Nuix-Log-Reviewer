@@ -76,7 +76,7 @@ namespace NuixLogReviewer
         {
             Microsoft.Win32.OpenFileDialog ofd = new Microsoft.Win32.OpenFileDialog();
             ofd.Title = "Load Nuix Logs";
-            ofd.Filter = "Nuix Logs|nuix*.log*";
+            ofd.Filter = "Nuix Logs|nuix*.log*;*.log";
             ofd.Multiselect = true;
             ofd.InitialDirectory = System.IO.Path.Combine(Environment.GetEnvironmentVariable("LocalAppData"), @"Nuix\Logs");
             if (ofd.ShowDialog() == true)
@@ -362,7 +362,7 @@ namespace NuixLogReviewer
                         {
                             pb.BroadcastProgress(i + 1);
                             NuixLogEntry entry = currentEntries[i];
-                            sw.Write(entry.ToLogLine());
+                            sw.WriteLine(entry.ToLogLine());
                         }
                     }
 

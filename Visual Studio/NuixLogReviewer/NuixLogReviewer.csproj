@@ -125,12 +125,15 @@
       <DependentUpon>LogEntryViewer.xaml</DependentUpon>
     </Compile>
     <Compile Include="LogRepository\AllEntriesIDList.cs" />
+    <Compile Include="LogRepository\Classifiers\KillingCurrentProcessClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\MultiLineClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\NuixPackageClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\DiskSpaceMessageClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\IEntryClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\MemoryMonitorClassifier.cs" />
+    <Compile Include="LogRepository\Classifiers\ProblemProcessingItemClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\ScriptOutputClassifier.cs" />
+    <Compile Include="LogRepository\Classifiers\SessionIsClosedClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\WorkerLogClassifier.cs" />
     <Compile Include="LogRepository\Classifiers\WorkerStateChangeClassifier.cs" />
     <Compile Include="LogRepository\CustomQueryParser.cs" />

@@ -6,15 +6,13 @@ using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
-    public class NuixPackageClassifier : IEntryClassifier
+    public class SessionIsClosedClassifier : IEntryClassifier
     {
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
-            // Look for log entries that appear to be Nuix code (and not dependencies) based on them
-            // being from package com.nuix.X
-            if (entry.Source.ToLower().StartsWith("com.nuix", StringComparison.OrdinalIgnoreCase))
+            if (entry.Content.Contains("The Session is closed"))
             {
-                return new string[] { "nuix_package" };
+                return new string[] { "session_is_closed" };
             }
             else
             {
