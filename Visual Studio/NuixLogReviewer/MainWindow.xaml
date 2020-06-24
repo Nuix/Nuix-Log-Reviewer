@@ -35,6 +35,23 @@
                     </MenuItem.Icon>
                 </MenuItem>
             </MenuItem>
+            <MenuItem Header="_Searches">
+                <MenuItem Header="Save Current Search As..." Name="menuSaveCurrentSearch" Click="menuSaveCurrentSearch_Click">
+                    <MenuItem.Icon>
+                        <Image Source="report_disk.png"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Append To Current Search..." Name="menuAppendSearch">
+                    <MenuItem.Icon>
+                        <Image Source="zoom_in.png"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Repalce Current Search With..." Name="menuReplaceSearch">
+                    <MenuItem.Icon>
+                        <Image Source="zoom.png"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+            </MenuItem>
         </Menu>
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
@@ -46,7 +63,7 @@
                 <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2">
+            <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="auto"/>
                     <ColumnDefinition Width="auto"/>
@@ -56,11 +73,21 @@
 
                 <Button x:Name="btnRunSearch" Click="btnRunSearch_Click" Grid.Column="0">
                     <Image Source="magnifier.png"/>
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="5"/>
+                        </Style>
+                    </Button.Resources>
                 </Button>
-                <Label Content="Query" Grid.Column="1"/>
+                <Label Content="Query" Grid.Column="1" FontWeight="DemiBold"/>
                 <TextBox x:Name="txtSearchQuery" FontFamily="Consolas" KeyUp="txtSearchQuery_KeyUp" Grid.Column="2" VerticalContentAlignment="Center"/>
-                <Button x:Name="btnClearSearch" Click="btnClearSearch_Click" Grid.Column="3">
+                <Button x:Name="btnClearSearch" Click="btnClearSearch_Click" Grid.Column="3" Margin="5,0,0,0">
                     <Image Source="cancel.png"/>
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="5"/>
+                        </Style>
+                    </Button.Resources>
                 </Button>
                 
             </Grid>
@@ -70,13 +97,41 @@
                 <Label Content="Records:" FontWeight="Bold"/>
                 <Label Name="lblRecordCounts" Content="0 / 0"/>
                 <Label Content="INFO:" FontWeight="Bold"/>
-                <Button Name="lblInfoCount" Content="0" Click="lblInfoCount_Click"/>
+                <Button Name="lblInfoCount" Content="0" Click="lblInfoCount_Click">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="3"/>
+                        </Style>
+                    </Button.Resources>
+                    <Button.ToolTip>Click this to filter down to only INFO entries.</Button.ToolTip>
+                </Button>
                 <Label Content="WARN:" FontWeight="Bold"/>
-                <Button Name="lblWarnCount" Content="0" Click="lblWarnCount_Click"/>
+                <Button Name="lblWarnCount" Content="0" Click="lblWarnCount_Click">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="3"/>
+                        </Style>
+                    </Button.Resources>
+                    <Button.ToolTip>Click this to filter down to only WARN entries.</Button.ToolTip>
+                </Button>
                 <Label Content="ERROR:" FontWeight="Bold"/>
-                <Button Name="lblErrorCount" Content="0" Click="lblErrorCount_Click"/>
+                <Button Name="lblErrorCount" Content="0" Click="lblErrorCount_Click">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="3"/>
+                        </Style>
+                    </Button.Resources>
+                    <Button.ToolTip>Click this to filter down to only ERROR entries.</Button.ToolTip>
+                </Button>
                 <Label Content="DEBUG:" FontWeight="Bold"/>
-                <Button Name="lblDebugCount" Content="0" Click="lblDebugCount_Click"/>
+                <Button Name="lblDebugCount" Content="0" Click="lblDebugCount_Click">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="3"/>
+                        </Style>
+                    </Button.Resources>
+                    <Button.ToolTip>Click this to filter down to only DEBUG entries.</Button.ToolTip>
+                </Button>
             </StatusBar>
         </Grid>
         <GridSplitter Grid.Row="2" Height="8" HorizontalAlignment="Stretch"/>
@@ -103,7 +158,7 @@
                     </Grid.RowDefinitions>
                     <Label Content="Please Wait..." FontSize="24" FontWeight="Bold" Grid.Row="0" Background="#FF4E7E7E" Foreground="White">
                     </Label>
-                    <TextBlock Name="lblStatus" Grid.Row="1" FontSize="18" Margin="5"/>
+                    <TextBlock Name="lblStatus" Grid.Row="1" FontSize="18" Margin="5" TextWrapping="Wrap"/>
                     <TextBlock Name="lblProgress" Grid.Row="2" FontSize="18" Margin="5"/>
                 </Grid>
             </Border>

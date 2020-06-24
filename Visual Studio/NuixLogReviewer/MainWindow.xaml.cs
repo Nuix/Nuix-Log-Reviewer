@@ -1,4 +1,5 @@
-﻿using NuixLogReviewer.LogRepository;
+﻿using NuixLogReviewer.GUI;
+using NuixLogReviewer.LogRepository;
 using Ookii.Dialogs.Wpf;
 using System;
 using System.Collections.Generic;
@@ -56,7 +57,54 @@ namespace NuixLogReviewer
             NuixLogRepo.RepoRootDirectory = System.IO.Path.Combine(appDir, "TempRepos");
             repo = new NuixLogRepo();
 
+            rebuildSavedSearchesMenu();
+        }
 
+        /// <summary>
+        /// Rebuilds the menu items in the saved searches menu by asking for a fresh listing of them
+        /// from SavedSearchesRepo class.
+        /// </summary>
+        private void rebuildSavedSearchesMenu()
+        {
+            menuAppendSearch.Items.Clear();
+            menuReplaceSearch.Items.Clear();
+            foreach (var savedSearch in SavedSearchesRepo.GetSavedSearches())
+            {
+                MenuItem appender = new MenuItem();
+                appender.Header = savedSearch.Name;
+                appender.ToolTip = "Query: " + savedSearch.Query;
+                appender.Icon = new System.Windows.Controls.Image
+                {
+                    Source = new BitmapImage(new Uri("zoom.png", UriKind.Relative))
+                };
+                appender.Click += (z, x) =>
+                {
+                    string currentQuery = txtSearchQuery.Text.Trim();
+                    if (!string.IsNullOrWhiteSpace(currentQuery))
+                    {
+                        txtSearchQuery.Text = currentQuery + " AND " + savedSearch.Query;
+                    }
+                    else
+                    {
+                        txtSearchQuery.Text = savedSearch.Query;
+                    }
+
+                };
+                menuAppendSearch.Items.Add(appender);
+
+                MenuItem replacer = new MenuItem();
+                replacer.Header = savedSearch.Name;
+                replacer.ToolTip = "Query: " + savedSearch.Query;
+                replacer.Icon = new System.Windows.Controls.Image
+                {
+                    Source = new BitmapImage(new Uri("zoom.png", UriKind.Relative))
+                };
+                replacer.Click += (z, x) =>
+                {
+                    txtSearchQuery.Text = savedSearch.Query;
+                };
+                menuReplaceSearch.Items.Add(replacer);
+            }
         }
 
         /// <summary>
@@ -373,6 +421,32 @@ namespace NuixLogReviewer
                 });
 
                 exportTask.Start();
+            }
+        }
+
+        private void menuSaveCurrentSearch_Click(object sender, RoutedEventArgs e)
+        {
+            string query = txtSearchQuery.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                string title = "Query is Empty";
+                string message = "Current query is empty.  Not much point in saving that right?";
+                MessageBox.Show(message, title);
+                return;
+            }
+            else
+            {
+                SaveSearchDialog ssd = new SaveSearchDialog();
+                ssd.Owner = this;
+                ssd.ShowDialog();
+                if (ssd.Success)
+                {
+                    string name = ssd.ProvidedName;
+
+                    SavedSearchesRepo.SaveSearch(name, query);
+                    rebuildSavedSearchesMenu();
+                }
             }
         }
     }
