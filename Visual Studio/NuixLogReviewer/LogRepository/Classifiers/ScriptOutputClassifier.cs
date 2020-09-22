@@ -6,12 +6,12 @@ using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
-    class ScriptOutputClassifier : IEntryClassifier
+    public class ScriptOutputClassifier : IEntryClassifier
     {
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
             // Look for entries that appear to be script related
-            if (entry.Channel == "SCRIPT")
+            if (entry.Source.Trim().StartsWith("SCRIPT"))
             {
                 return new string[] { "script" };
             }
