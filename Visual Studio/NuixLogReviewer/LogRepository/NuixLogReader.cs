@@ -23,7 +23,7 @@ namespace NuixLogReviewer.LogRepository
 
         public static string TimestampExpression
         {
-            get { return @"(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+[\+\-]?\d{4})\s+"; }
+            get { return @"^(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+[\+\-]?\d{4})\s+"; }
         }
 
         public static string ChannelExpression
@@ -43,7 +43,7 @@ namespace NuixLogReviewer.LogRepository
 
         public static string SourceExpression
         {
-            get { return @"(?<source>[^\s]+)\s-\s"; }
+            get { return @"(?<source>[^\-]+)\s-\s"; }
         }
 
         public static string ContentExpression
