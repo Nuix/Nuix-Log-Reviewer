@@ -159,11 +159,18 @@ namespace NuixLogReviewer.LogRepository
             ExecuteNonQuery("CREATE INDEX IDX_TempIDList ON IDList (ID);");
 
             string retrievalQuery = "SELECT ID FROM LogEntry WHERE ID IN (SELECT ID FROM IDList) ORDER BY TimeStamp ASC, LineNumber ASC";
-            long[] sortedIds =
+
+            List<long> sortedIds =
             ExecuteReader<long>(retrievalQuery, (reader) =>
             {
                 return (long)reader["ID"];
-            }).ToArray();
+            }).ToList();
+
+            //long[] sortedIds =
+            //ExecuteReader<long>(retrievalQuery, (reader) =>
+            //{
+            //    return (long)reader["ID"];
+            //}).ToArray();
 
             ExecuteNonQuery("DROP TABLE IDList;");
 

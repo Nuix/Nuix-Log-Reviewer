@@ -87,8 +87,28 @@ namespace NuixLogReviewer.LogRepository
                 NuixLogEntry current = null;
                 StringBuilder currentContent = new StringBuilder();
 
-                while ((line = sr.ReadLine()) != null)
+                ConcurrentQueue<string> lineQueue = new ConcurrentQueue<string>();
+
+                Task lineReaderTask = new Task(() => {
+                    string readLine;
+                    while ((readLine = sr.ReadLine()) != null)
+                    {
+                        lineQueue.Enqueue(readLine);
+                    }
+                    lineQueue.Enqueue(null);
+                });
+
+                lineReaderTask.Start();
+
+                while (true)
                 {
+                    if (!lineQueue.TryDequeue(out line))
+                    {
+                        continue;
+                    }
+
+                    if (line == null) break;
+
                     lineNumber++;
 
                     // Since a log entry in the format understood by this code starts with a date, and that date should start with 20xx we
