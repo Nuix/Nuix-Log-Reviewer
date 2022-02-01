@@ -55,7 +55,7 @@ namespace NuixLogReviewer.LogRepository
             builder.DataSource = DataSource;
             builder.JournalMode = SQLiteJournalModeEnum.Off;
             builder.CacheSize = 10000;
-            builder.PageSize = 4096;
+            builder.PageSize = 4096 * 10;
             builder.Pooling = false;
             builder.SyncMode = SynchronizationModes.Off;
 

@@ -61,8 +61,8 @@ namespace NuixLogReviewer.LogRepository
                 analyzer = getAnalyzer();
                 luceneDirectory = FSDirectory.Open(IndexDirectory);
                 writer = new IndexWriter(luceneDirectory, analyzer, IndexWriter.MaxFieldLength.UNLIMITED);
-                writer.MergeFactor = 30;
-                writer.SetRAMBufferSizeMB(128);
+                writer.MergeFactor = 50;
+                writer.SetRAMBufferSizeMB(1024);
 
                 InWriteMode = true;
             }
@@ -125,6 +125,19 @@ namespace NuixLogReviewer.LogRepository
                 long date = (entry.TimeStamp.Year * 10000) + (entry.TimeStamp.Month * 100) + entry.TimeStamp.Day;
                 dateField.SetLongValue(date);
                 flagsField.SetValue(String.Join(" ", entry.Flags));
+
+                writer.AddDocument(doc);
+            }
+        }
+
+        public void IndexLogEntry(Document doc)
+        {
+            if (!InWriteMode)
+            {
+                throw new Exception("LogSearchIndex is not currently in write mode!");
+            }
+            else
+            {
                 writer.AddDocument(doc);
             }
         }
@@ -135,7 +148,7 @@ namespace NuixLogReviewer.LogRepository
             Regex notFix = new Regex(@"\bnot\b", RegexOptions.Compiled);
             queryString = notFix.Replace(queryString, "NOT");
 
-            // Emtpy query is all items, we return a special collection that pretends to be a full list of ID values
+            // Empty query is all items, we return a special collection that pretends to be a full list of ID values
             // but that is actually just based on the range of possible values.
             if (string.IsNullOrWhiteSpace(queryString))
             {
@@ -147,8 +160,14 @@ namespace NuixLogReviewer.LogRepository
                 analyzer = getAnalyzer();
                 IndexSearcher searcher = new IndexSearcher(luceneDirectory);
                 Query query = parseQuery(queryString);
+                Sort sort = new Sort(new SortField[]
+                {
+                    new SortField("date",SortField.LONG),
+                    new SortField("line",SortField.LONG),
+                });
 
-                var hitsFound = searcher.Search(query, int.MaxValue);
+                //var hitsFound = searcher.Search(query, int.MaxValue);
+                var hitsFound = searcher.Search(query, null, int.MaxValue, sort);
 
                 long[] ids = new long[hitsFound.TotalHits];
                 for (int i = 0; i < hitsFound.TotalHits; i++)
