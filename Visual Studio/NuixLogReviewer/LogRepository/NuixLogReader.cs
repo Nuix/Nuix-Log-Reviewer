@@ -78,7 +78,7 @@ namespace NuixLogReviewer.LogRepository
 
             CultureInfo culture = new CultureInfo("en-US");
 
-            int streamReaderBufferSize = 1024 * 1024 * 4;
+            int streamReaderBufferSize = 1024 * 1024 * 5;
 
             using (StreamReader sr = new StreamReader(FilePath, Encoding.UTF8, false, streamReaderBufferSize))
             {
@@ -87,40 +87,65 @@ namespace NuixLogReviewer.LogRepository
                 NuixLogEntry current = null;
                 StringBuilder currentContent = new StringBuilder();
 
-                while ((line = sr.ReadLine()) != null)
-                {
-                    lineNumber++;
+                BlockingCollection<string> lineQueue = new BlockingCollection<string>(500);
+                BlockingCollection<NuixLogEntry> parsedQueue = new BlockingCollection<NuixLogEntry>(100);
 
-                    // Since a log entry in the format understood by this code starts with a date, and that date should start with 20xx we
-                    // can use this as a quick way to determine if we even need to do the regex parse of a line.  If the line doesn't start
-                    // with a 20xx value, we can assume it must be content.  If it does start with 20xx then we do the deeper analysis to determine
-                    // whether this is actually a new log entry, parse the fields, etc.  This allows for skipping more costly processing in some
-                    // instaces and it makes the parsing process a bit faster!
-                    if (line.StartsWith("20"))
+                Task lineReaderTask = new Task(() => {
+                    string readLine;
+                    while ((readLine = sr.ReadLine()) != null)
                     {
-                        Match parsed = LineParseRegex.Match(line);
-                        if (parsed.Success)
+                        lineQueue.Add(readLine);
+                    }
+                    lineQueue.Add(null);
+                });
+
+                lineReaderTask.Start();
+
+                Task lineParserTask = new Task(() => {
+                    while (true)
+                    {
+                        line = lineQueue.Take();
+                        if (line == null) break;
+
+                        lineNumber++;
+
+                        // Since a log entry in the format understood by this code starts with a date, and that date should start with 20xx we
+                        // can use this as a quick way to determine if we even need to do the regex parse of a line.  If the line doesn't start
+                        // with a 20xx value, we can assume it must be content.  If it does start with 20xx then we do the deeper analysis to determine
+                        // whether this is actually a new log entry, parse the fields, etc.  This allows for skipping more costly processing in some
+                        // instaces and it makes the parsing process a bit faster!
+                        if (line.StartsWith("20"))
                         {
-                            if (current != null)
+                            Match parsed = LineParseRegex.Match(line);
+                            if (parsed.Success)
                             {
-                                current.Content = currentContent.ToString().Trim();
-                                currentContent.Clear();
-                                yield return current;
+                                if (current != null)
+                                {
+                                    current.Content = currentContent.ToString().Trim();
+                                    currentContent.Clear();
+                                    parsedQueue.Add(current);
+                                }
+
+                                current = new NuixLogEntry();
+
+                                TimeSpan parsedElapsed = TimeSpan.Zero;
+
+                                current.LineNumber = lineNumber;
+                                current.FilePath = FilePath;
+                                current.FileName = Path.GetFileName(FilePath);
+                                currentContent.AppendLine(parsed.Groups["content"].Value);
+                                current.TimeStamp = DateTime.ParseExact(parsed.Groups["timestamp"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
+                                current.Channel = parsed.Groups["channel"].Value.Trim();
+                                current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
+                                current.Level = String.Intern(parsed.Groups["level"].Value.Trim()); // Intern since we know there is a small set of possible values
+                                current.Source = parsed.Groups["source"].Value.Trim();
                             }
-
-                            current = new NuixLogEntry();
-
-                            TimeSpan parsedElapsed = TimeSpan.Zero;
-
-                            current.LineNumber = lineNumber;
-                            current.FilePath = FilePath;
-                            current.FileName = Path.GetFileName(FilePath);
-                            currentContent.AppendLine(parsed.Groups["content"].Value);
-                            current.TimeStamp = DateTime.ParseExact(parsed.Groups["timestamp"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
-                            current.Channel = parsed.Groups["channel"].Value.Trim();
-                            current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
-                            current.Level = String.Intern(parsed.Groups["level"].Value.Trim()); // Intern since we know there is a small set of possible values
-                            current.Source = parsed.Groups["source"].Value.Trim();
+                            else
+                            {
+                                // This line from the log should be content on a new line from
+                                // a previously encountered log entry
+                                currentContent.AppendLine(line);
+                            }
                         }
                         else
                         {
@@ -129,20 +154,25 @@ namespace NuixLogReviewer.LogRepository
                             currentContent.AppendLine(line);
                         }
                     }
-                    else
-                    {
-                        // This line from the log should be content on a new line from
-                        // a previously encountered log entry
-                        currentContent.AppendLine(line);
-                    }
-                }
 
-                // Make sure to kick out the final entry as well!
-                if (current != null)
+                    // Make sure to kick out the final entry as well!
+                    if (current != null)
+                    {
+                        current.Content = currentContent.ToString().Trim();
+                        currentContent.Clear();
+                        parsedQueue.Add(current);
+                    }
+
+                    parsedQueue.Add(null);
+                });
+
+                lineParserTask.Start();
+
+                while (true)
                 {
-                    current.Content = currentContent.ToString().Trim();
-                    currentContent.Clear();
-                    yield return current;
+                    NuixLogEntry parsedEntry = parsedQueue.Take();
+                    if (parsedEntry == null) { yield break; }
+                    else { yield return parsedEntry; }
                 }
             }
         }

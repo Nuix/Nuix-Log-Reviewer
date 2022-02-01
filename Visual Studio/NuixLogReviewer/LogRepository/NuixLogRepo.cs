@@ -1,4 +1,5 @@
-﻿using NuixLogReviewer.LogRepository.Classifiers;
+﻿using Lucene.Net.Documents;
+using NuixLogReviewer.LogRepository.Classifiers;
 using NuixLogReviewerObjects;
 using System;
 using System.Collections.Concurrent;
@@ -56,7 +57,7 @@ namespace NuixLogReviewer.LogRepository
             }
 
             // Drop index and we will rebuild all at once after we have pulled in all the records
-            pb.BroadcastStatus("Dropping indexes...");
+            pb.BroadcastStatus("Dropping database indexes...");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_EntryID;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_TimeStamp;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LineNumber;");
@@ -80,7 +81,7 @@ namespace NuixLogReviewer.LogRepository
 
             // SQLite is faster building whole index at once rather than on each insert, so earlier
             // we dropped the index and now we rebuild it
-            pb.BroadcastStatus("Rebuilding indexes...");
+            pb.BroadcastStatus("Rebuilding database indexes...");
             Database.ExecuteNonQuery("CREATE INDEX IDX_EntryID ON LogEntry (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_TimeStamp ON LogEntry (TimeStamp);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_LineNumber ON LogEntry (LineNumber);");
@@ -104,7 +105,7 @@ namespace NuixLogReviewer.LogRepository
                 return startingRecordCount;
             }
 
-            int indexingConcurrency = 4;
+            int indexingConcurrency = 8;
 
             pb.BroadcastStatus("Loading from " + logFile);
 
@@ -114,7 +115,7 @@ namespace NuixLogReviewer.LogRepository
 
             NuixLogReader reader = new NuixLogReader(logFile);
 
-            SQLiteBatchInserter batchInserter = Database.CreateBatchInserter(1000);
+            SQLiteBatchInserter batchInserter = Database.CreateBatchInserter(5000);
             batchInserter.Begin(Database.GetEmbeddedSQL("NuixLogReviewer.LogRepository.InsertLogEntry.sqlite"));
 
             // Used for progress updates
@@ -200,7 +201,7 @@ namespace NuixLogReviewer.LogRepository
                     recordCount++;
 
                     // Periodically report progress
-                    if ((DateTime.Now - lastProgress).TotalMilliseconds >= 1000)
+                    if ((DateTime.Now - lastProgress).TotalMilliseconds >= 500)
                     {
                         lock (this) { pb.BroadcastProgress(recordCount); }
                         lastProgress = DateTime.Now;
@@ -222,13 +223,44 @@ namespace NuixLogReviewer.LogRepository
             {
                 Task indexConsumer = new Task(new Action(() =>
                 {
+                    NumericField idField = new NumericField("id", Field.Store.YES, true);
+                    NumericField lineField = new NumericField("line");
+                    Field channelField = new Field("channel", "", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
+                    Field levelField = new Field("level", "", Field.Store.NO, Field.Index.ANALYZED);
+                    Field sourceField = new Field("source", "", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
+                    Field contentField = new Field("content", "", Field.Store.NO, Field.Index.ANALYZED);
+                    Field existsFields = new Field("exists", "yes", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
+                    NumericField dateField = new NumericField("date");
+                    Field flagsField = new Field("flag", "", Field.Store.NO, Field.Index.ANALYZED);
+
+                    Document doc = new Document();
+                    doc.Add(existsFields);
+                    doc.Add(idField);
+                    doc.Add(lineField);
+                    doc.Add(channelField);
+                    doc.Add(levelField);
+                    doc.Add(sourceField);
+                    doc.Add(contentField);
+                    doc.Add(dateField);
+                    doc.Add(flagsField);
+
                     while (true)
                     {
                         NuixLogEntry entry = toIndex.Take();
                         if (entry == null) { break; }
 
                         // Push to Lucene
-                        SearchIndex.IndexLogEntry(entry);
+                        idField.SetLongValue(entry.ID);
+                        lineField.SetLongValue(entry.LineNumber);
+                        channelField.SetValue(entry.Channel);
+                        levelField.SetValue(entry.Level);
+                        sourceField.SetValue(entry.Source);
+                        contentField.SetValue(entry.Content);
+                        long date = (entry.TimeStamp.Year * 10000) + (entry.TimeStamp.Month * 100) + entry.TimeStamp.Day;
+                        dateField.SetLongValue(date);
+                        flagsField.SetValue(String.Join(" ", entry.Flags));
+
+                        SearchIndex.IndexLogEntry(doc);
                     }
 
                     pb.BroadcastProgress(recordCount);
@@ -243,6 +275,8 @@ namespace NuixLogReviewer.LogRepository
 
             // Wait for them all to finish up
             Task.WaitAll(readerConsumer, classificationTask, dbConsumer);
+
+            pb.BroadcastStatus("Waiting for indexing to complete...");
             Task.WaitAll(indexers);
 
             // Report final progress
@@ -265,9 +299,9 @@ namespace NuixLogReviewer.LogRepository
             IList<long> ids = SearchIndex.Search(this, query);
             LogEntrySearchResponse result = new LogEntrySearchResponse(new NuixLogEntryItemProvider()
             {
-                Ids = Database.SortIds(ids),
+                Ids = ids, //Database.SortIds(ids),
                 SourceRepository = this
-            }, 200);
+            }, 1000);
 
             // For the given search result we want to be able to additionally report how many
             // are each log level
