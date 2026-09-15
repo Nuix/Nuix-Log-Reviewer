@@ -31,3 +31,12 @@ CREATE TABLE IF NOT EXISTS Source (
 	Value TEXT
 );
 
+-- Lookup tables are queried by Value during load (SELECT ID ... WHERE Value == @value).
+-- Their ID columns are already indexed as INTEGER PRIMARY KEY (rowid), so we only need
+-- Value indexes. These are created up front and kept in place during load since the
+-- lookup tables are tiny and the Value lookups happen while records are being inserted.
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_FileName_Value ON FileName (Value);
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_Channel_Value ON Channel (Value);
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_Level_Value ON Level (Value);
+CREATE UNIQUE INDEX IF NOT EXISTS IDX_Source_Value ON Source (Value);
+

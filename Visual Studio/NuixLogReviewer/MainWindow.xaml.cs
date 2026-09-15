@@ -57,6 +57,8 @@ namespace NuixLogReviewer
             NuixLogRepo.RepoRootDirectory = System.IO.Path.Combine(appDir, "TempRepos");
             repo = new NuixLogRepo();
 
+            levelChart.TimeRangeSelected += levelChart_TimeRangeSelected;
+
             rebuildSavedSearchesMenu();
         }
 
@@ -108,6 +110,46 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
+        /// Updates the StatusBar "Range:" label with the given event-time span (typically that of
+        /// the current filtered result set).
+        /// </summary>
+        private void updateDateRangeDisplay(DateTime? min, DateTime? max)
+        {
+            if (min.HasValue && max.HasValue)
+            {
+                TimeSpan span = max.Value - min.Value;
+                string spanText = FormatSpan(span);
+                lblDateRange.Content = string.Format("{0:yyyy-MM-dd HH:mm:ss} \u2192 {1:yyyy-MM-dd HH:mm:ss}  ({2})",
+                    min.Value, max.Value, spanText);
+            }
+            else
+            {
+                lblDateRange.Content = "\u2014";
+            }
+        }
+
+        /// <summary>
+        /// Formats a TimeSpan compactly, e.g. "5d 16h", "3h 12m", "45s".
+        /// </summary>
+        private static string FormatSpan(TimeSpan span)
+        {
+            if (span.TotalDays >= 1) return $"{(int)span.TotalDays}d {span.Hours}h";
+            if (span.TotalHours >= 1) return $"{span.Hours}h {span.Minutes}m";
+            if (span.TotalMinutes >= 1) return $"{span.Minutes}m {span.Seconds}s";
+            return $"{span.Seconds}s";
+        }
+
+        /// <summary>
+        /// When the user drags a region on the time chart, overwrite the search with a timestamp
+        /// range spanning the selected window and re-run. The user can refine from there.
+        /// </summary>
+        private void levelChart_TimeRangeSelected(long minTicks, long maxTicks)
+        {
+            txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", minTicks, maxTicks);
+            performSearch();
+        }
+
+        /// <summary>
         /// When a user selects a given row in the log entry grid, display that entry's details
         /// in the leg entry viewer.
         /// </summary>
@@ -115,6 +157,40 @@ namespace NuixLogReviewer
         private void resultsGrid_SelectedLogEntryChanged(NuixLogEntry selectedEntry)
         {
             logEntryViewer.SetLogEntry(selectedEntry);
+            levelChart.SetSelectionMarker(selectedEntry != null ? selectedEntry.TimeStamp.Ticks : (long?)null);
+            if (selectedEntry != null)
+            {
+                bottomTabs.SelectedItem = tabDetails;
+            }
+        }
+
+        /// <summary>Reflects the grid's currently visible rows as a shaded band on the chart.</summary>
+        private void resultsGrid_VisibleRangeChanged(long? startTicks, long? endTicks)
+        {
+            levelChart.SetVisibleRange(startTicks, endTicks);
+        }
+
+        /// <summary>
+        /// Handles the grid's "Pivot Around Event Time" request: prompts for a +/- window, then
+        /// overwrites the search with a timestamp range spanning that window around the entry's
+        /// event time and runs it. The user can then refine from there.
+        /// </summary>
+        private void resultsGrid_PivotAroundEntryRequested(NuixLogEntry entry)
+        {
+            if (entry == null) { return; }
+
+            var dialog = new PivotTimeDialog(entry.TimeStamp) { Owner = this };
+            dialog.ShowDialog();
+            if (!dialog.Success) { return; }
+
+            long startTicks = (entry.TimeStamp - dialog.Window).Ticks;
+            long endTicks = (entry.TimeStamp + dialog.Window).Ticks;
+            if (startTicks < 0) { startTicks = 0; }
+
+            // Overwrite the query with the pivot range (ticks), then run it. Ask the search to select
+            // and scroll to the entry we pivoted on so it stays in view within the loaded context.
+            txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", startTicks, endTicks);
+            performSearch(entry.ID);
         }
 
         /// <summary>
@@ -140,8 +216,9 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
-        /// Allows a user to select a directory.  All files matching "nuix*.log*" are located and
-        /// then loaded using loadLogFiles method.
+        /// Allows a user to select a directory. All structured Nuix/Automate log files under it are
+        /// located (see <see cref="FindStructuredLogFiles"/>) and loaded via loadLogFiles. Unstructured
+        /// blob logs (stdout/stderr/derby) are excluded.
         /// </summary>
         private void menuLoadDirectory_Click(object sender, RoutedEventArgs e)
         {
@@ -149,7 +226,7 @@ namespace NuixLogReviewer
             if (dialog.ShowDialog() == true)
             {
                 string selectedDirectory = dialog.SelectedPath;
-                string[] logFiles = System.IO.Directory.GetFiles(selectedDirectory, "nuix*.log*", System.IO.SearchOption.AllDirectories);
+                string[] logFiles = FindStructuredLogFiles(selectedDirectory);
 
                 // Dispose of current repo
                 NuixLogRepo prev = repo;
@@ -158,6 +235,50 @@ namespace NuixLogReviewer
 
                 loadLogFiles(logFiles);
             }
+        }
+
+        // Basenames of unstructured "blob" logs (whole-file output rather than per-line records).
+        // These are deliberately excluded from directory loading since the reviewer only handles
+        // logs where each entry begins with a timestamped record header.
+        private static readonly HashSet<string> ExcludedBlobLogNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "stdout.log",
+            "stderr.log",
+            "derby.log",
+        };
+
+        // Filename patterns for the structured Nuix / Automate logs the reviewer can parse. Matched
+        // case-insensitively against each file's name. "*.log*" trailing wildcard also picks up
+        // rolled files like "nuix.log.1".
+        private static readonly string[] StructuredLogPatterns = new[]
+        {
+            "nuix*.log*",                   // classic Workstation logs (incl. worker nuix.log)
+            "automate-scheduler*.log*",     // Automate scheduler
+            "automate-engine-server*.log*", // Automate engine server
+            "engine.*-job.*.log*",          // Automate engine per-job logs
+            "engine.*-init.log*",           // Automate engine init logs
+        };
+
+        /// <summary>
+        /// Recursively finds structured Nuix/Automate log files under the given directory, excluding
+        /// unstructured blob logs (stdout/stderr/derby). A file is included if its name matches any
+        /// of <see cref="StructuredLogPatterns"/> and is not in <see cref="ExcludedBlobLogNames"/>.
+        /// </summary>
+        private static string[] FindStructuredLogFiles(string directory)
+        {
+            var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pattern in StructuredLogPatterns)
+            {
+                foreach (var path in System.IO.Directory.EnumerateFiles(directory, pattern, System.IO.SearchOption.AllDirectories))
+                {
+                    if (ExcludedBlobLogNames.Contains(System.IO.Path.GetFileName(path)))
+                    {
+                        continue;
+                    }
+                    results.Add(path);
+                }
+            }
+            return results.ToArray();
         }
 
         /// <summary>
@@ -193,8 +314,7 @@ namespace NuixLogReviewer
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         txtSearchQuery.Text = "";
-                        flagList.ItemsSource = repo.Database.GetAllFlags();
-                        // IsBusy will be cleared by performSearch()
+                        // The classifier table fills from performSearch() below (per-filtered-set counts).
                         performSearch();
                     }));
                 });
@@ -216,11 +336,16 @@ namespace NuixLogReviewer
         /// <summary>
         /// Performs whatever search is in the search bar.
         /// </summary>
-        private void performSearch()
+        /// <param name="selectEntryId">
+        /// When provided, after results load the grid selects and scrolls to the entry with this id
+        /// (used by "pivot around event" so the pivoted-on entry stays in view). Null selects nothing.
+        /// </param>
+        private void performSearch(long? selectEntryId = null)
         {
             IsBusy = true;
             string query = txtSearchQuery.Text;
             logEntryViewer.Clear();
+            levelChart.ShowPlaceholder("Charting...");
             lblStatus.Text = "Executing search:\n" + query;
             lblProgress.Text = "";
 
@@ -239,6 +364,9 @@ namespace NuixLogReviewer
                 try
                 {
                     LogEntrySearchResponse hits = repo.Search(query);
+                    // Time-series for the chart (single-pass, fast). ~120 buckets gives a smooth
+                    // full-width strip; the chart downsamples visually as needed.
+                    var series = repo.GetTimeSeries(query, 120);
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         lblRecordCounts.Content = String.Format("{0} / {1}", hits.Count.ToString("###,###,##0"), repo.Database.TotalRecords.ToString("###,###,##0"));
@@ -255,7 +383,27 @@ namespace NuixLogReviewer
                         lblDebugCount.Content = hits.DebugEntryCount.ToString("###,###,##0");
                         lblDebugCount.IsEnabled = hits.DebugEntryCount > 0;
 
+                        updateDateRangeDisplay(hits.FilteredMinTime, hits.FilteredMaxTime);
+
+                        levelChart.SetData(series);
+
+                        // Populate the classifier table with per-flag counts for the current set,
+                        // most frequent first. Flags with a zero count in this set are omitted.
+                        flagList.ItemsSource = hits.FlagCounts
+                            .Where(kv => kv.Value > 0)
+                            .OrderByDescending(kv => kv.Value)
+                            .ThenBy(kv => kv.Key)
+                            .Select(kv => new LogRepository.FlagCount { Name = kv.Key, Count = kv.Value })
+                            .ToList();
+
                         resultsGrid.SetLogEntries(hits);
+
+                        // After a pivot, keep the entry we pivoted on selected and in view within the
+                        // freshly loaded context window.
+                        if (selectEntryId.HasValue)
+                        {
+                            resultsGrid.SelectAndScrollTo(selectEntryId.Value);
+                        }
                     }));
                 }
                 catch (Exception exc)
@@ -303,15 +451,283 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
-        /// When user double clicks a flag from the list, we append it to the search bar.
+        /// When user double clicks a classifier row, drill the search down to that flag.
         /// </summary>
         private void flagList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (flagList.SelectedIndex > -1)
+            if (flagList.SelectedItem is LogRepository.FlagCount fc && !string.IsNullOrEmpty(fc.Name))
             {
-                string flag = (string)flagList.Items[flagList.SelectedIndex];
-                drillDownSearch("flag:" + flag, false);
+                drillDownSearch("flag:" + fc.Name, false);
             }
+        }
+
+        /// <summary>The most recently computed patterns, retained so the sort toggle can re-order them.</summary>
+        private IList<LogSearchIndex.LogPattern> _lastPatterns;
+
+        /// <summary>
+        /// Mines the current result set into message-template patterns and shows them in the Patterns
+        /// tab. Runs off the UI thread (like search) with the busy overlay, since the full-set pass can
+        /// take a few hundred milliseconds.
+        /// </summary>
+        private void btnComputePatterns_Click(object sender, RoutedEventArgs e)
+        {
+            if (repo.Database.TotalRecords < 1)
+            {
+                MessageBox.Show("Please load some log files first.");
+                return;
+            }
+
+            IsBusy = true;
+            lblStatus.Text = "Computing patterns...";
+            lblProgress.Text = "";
+            string query = txtSearchQuery.Text;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var patterns = repo.GetPatterns(query);
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        _lastPatterns = patterns;
+                        applyPatternSort();
+                        bottomTabs.SelectedItem = tabPatterns;
+                        IsBusy = false;
+                    }));
+                }
+                catch (Exception exc)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        IsBusy = false;
+                        MessageBox.Show(exc.Message);
+                    }));
+                }
+            });
+        }
+
+        /// <summary>
+        /// Current pattern sort column ("Count" | "First Seen" | "Last Seen" | "Pattern") and
+        /// direction. Defaults to Count (with direction driven by the "Rare first" toggle). Header
+        /// clicks update these; the "Rare first" checkbox is kept in sync when Count is the sort key.
+        /// </summary>
+        private string _patternSortHeader = "Count";
+        private bool _patternSortAscending = true; // matches "Rare first" (checked) default => count ascending
+
+        /// <summary>Re-orders the last computed patterns per the active sort column/direction and binds them.</summary>
+        private void applyPatternSort()
+        {
+            if (_lastPatterns == null) return;
+
+            IEnumerable<LogSearchIndex.LogPattern> ordered;
+            switch (_patternSortHeader)
+            {
+                case "First Seen":
+                    ordered = _patternSortAscending
+                        ? _lastPatterns.OrderBy(p => p.FirstSeen)
+                        : _lastPatterns.OrderByDescending(p => p.FirstSeen);
+                    break;
+                case "Last Seen":
+                    ordered = _patternSortAscending
+                        ? _lastPatterns.OrderBy(p => p.LastSeen)
+                        : _lastPatterns.OrderByDescending(p => p.LastSeen);
+                    break;
+                case "Pattern":
+                    ordered = _patternSortAscending
+                        ? _lastPatterns.OrderBy(p => p.Template, StringComparer.OrdinalIgnoreCase)
+                        : _lastPatterns.OrderByDescending(p => p.Template, StringComparer.OrdinalIgnoreCase);
+                    break;
+                case "Count":
+                default:
+                    ordered = _patternSortAscending
+                        ? _lastPatterns.OrderBy(p => p.Count)
+                        : _lastPatterns.OrderByDescending(p => p.Count);
+                    break;
+            }
+
+            patternList.ItemsSource = ordered.ToList();
+            SyncPatternSortArrow();
+        }
+
+        /// <summary>
+        /// Ensures the sort-direction arrow sits on the active sort column header with the right
+        /// direction, and is cleared from all others. Driven from applyPatternSort so it stays correct
+        /// no matter what triggered the sort (a header click, the "Rare first" checkbox, or the initial
+        /// Compute Patterns). Each header's Tag ("asc"/"desc"/null) is turned into an up/down triangle
+        /// by the SortableHeaderStyle template. Safe to call before the headers exist (no-op then).
+        /// </summary>
+        private void SyncPatternSortArrow()
+        {
+            foreach (var h in FindVisualChildren<System.Windows.Controls.GridViewColumnHeader>(patternList))
+            {
+                if (!(h.Content is string text) || string.IsNullOrEmpty(text))
+                {
+                    continue; // skip the trailing padding header
+                }
+                h.Tag = (text == _patternSortHeader)
+                    ? (_patternSortAscending ? "asc" : "desc")
+                    : null;
+            }
+        }
+
+        /// <summary>Depth-first enumeration of visual descendants of a given type.</summary>
+        private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+        {
+            if (root == null) yield break;
+            int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+            for (int i = 0; i < count; i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+                if (child is T match) yield return match;
+                foreach (var descendant in FindVisualChildren<T>(child))
+                {
+                    yield return descendant;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The "Rare first" toggle is just a shortcut for sorting by Count ascending (rare) vs
+        /// descending (frequent). Keep it wired to the same sort model as the column headers.
+        /// </summary>
+        private void chkRareFirst_Click(object sender, RoutedEventArgs e)
+        {
+            _patternSortHeader = "Count";
+            _patternSortAscending = (chkRareFirst.IsChecked == true);
+            applyPatternSort();
+        }
+
+        /// <summary>
+        /// Sorts the patterns table when a column header is clicked. Clicking the current sort column
+        /// flips the direction; clicking a different column sorts it (Count/First/Last default to
+        /// descending as the most useful first look; Pattern defaults to ascending A-Z). The "Rare
+        /// first" checkbox is kept in sync when Count is the active sort column, and applyPatternSort
+        /// moves the direction arrow to the active header.
+        /// </summary>
+        private void patternList_ColumnHeaderClick(object sender, RoutedEventArgs e)
+        {
+            if (!(e.OriginalSource is System.Windows.Controls.GridViewColumnHeader header)) return;
+            // Clicking the padding header (no content) or the column separators yields no usable header.
+            if (!(header.Content is string headerText) || string.IsNullOrEmpty(headerText)) return;
+
+            if (_patternSortHeader == headerText)
+            {
+                _patternSortAscending = !_patternSortAscending;
+            }
+            else
+            {
+                _patternSortHeader = headerText;
+                // Pattern reads best A-Z; the numeric/time columns read best largest/newest first.
+                _patternSortAscending = (headerText == "Pattern");
+            }
+
+            // Keep the "Rare first" checkbox meaningful: it reflects Count-ascending, and is only
+            // relevant when Count is the sort key.
+            if (_patternSortHeader == "Count")
+            {
+                chkRareFirst.IsChecked = _patternSortAscending;
+            }
+
+            applyPatternSort();
+        }
+
+        /// <summary>Copy is available whenever at least one pattern row is selected.</summary>
+        private void patternCopy_CanExecute(object sender, System.Windows.Input.CanExecuteRoutedEventArgs e)
+        {
+            e.CanExecute = patternList.SelectedItems.Count > 0;
+        }
+
+        /// <summary>Ctrl+C / context-menu "Copy": copies the selected rows as tab-separated text (with a header row).</summary>
+        private void patternCopyRows_Executed(object sender, System.Windows.Input.ExecutedRoutedEventArgs e)
+        {
+            CopySelectedPatterns(templatesOnly: false);
+        }
+
+        private void patternCopyRows_Click(object sender, RoutedEventArgs e)
+        {
+            CopySelectedPatterns(templatesOnly: false);
+        }
+
+        /// <summary>Context-menu "Copy Pattern(s) Only": copies just the template text, one per line.</summary>
+        private void patternCopyTemplates_Click(object sender, RoutedEventArgs e)
+        {
+            CopySelectedPatterns(templatesOnly: true);
+        }
+
+        /// <summary>
+        /// Copies the selected pattern rows to the clipboard in the order they appear in the grid.
+        /// Full mode emits a header plus tab-separated Count/First Seen/Last Seen/Pattern (paste-friendly
+        /// into a spreadsheet or a chat); templates-only emits just the pattern text, one per line, which
+        /// is what's most useful for refining the masker's collapse rules.
+        /// </summary>
+        private void CopySelectedPatterns(bool templatesOnly)
+        {
+            // SelectedItems is in selection order; project onto the grid's current display order so the
+            // copied text matches what the user sees.
+            var selected = new HashSet<LogSearchIndex.LogPattern>(
+                patternList.SelectedItems.OfType<LogSearchIndex.LogPattern>());
+            if (selected.Count == 0) { return; }
+
+            var rows = patternList.Items.OfType<LogSearchIndex.LogPattern>()
+                .Where(selected.Contains)
+                .ToList();
+
+            var sb = new StringBuilder();
+            if (templatesOnly)
+            {
+                foreach (var p in rows)
+                {
+                    sb.AppendLine(p.Template);
+                }
+            }
+            else
+            {
+                sb.AppendLine("Count\tFirst Seen\tLast Seen\tPattern");
+                foreach (var p in rows)
+                {
+                    sb.AppendLine(string.Format("{0}\t{1:yyyy-MM-dd HH:mm:ss}\t{2:yyyy-MM-dd HH:mm:ss}\t{3}",
+                        p.Count, p.FirstSeen, p.LastSeen, p.Template));
+                }
+            }
+
+            try
+            {
+                Clipboard.SetText(sb.ToString());
+            }
+            catch (Exception)
+            {
+                // The clipboard can transiently be locked by another process; ignore rather than crash.
+            }
+        }
+        /// </summary>
+        private void patternList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (!(patternList.SelectedItem is LogSearchIndex.LogPattern pattern) || pattern.Ids == null)
+            {
+                return;
+            }
+
+            var ids = pattern.Ids as IList<long> ?? pattern.Ids.ToList();
+            var hits = repo.BuildResponseForIds(ids);
+
+            lblRecordCounts.Content = String.Format("{0} / {1}",
+                hits.Count.ToString("###,###,##0"), repo.Database.TotalRecords.ToString("###,###,##0"));
+            lblInfoCount.Content = hits.InfoEntryCount.ToString("###,###,##0");
+            lblInfoCount.IsEnabled = hits.InfoEntryCount > 0;
+            lblWarnCount.Content = hits.WarnEntryCount.ToString("###,###,##0");
+            lblWarnCount.IsEnabled = hits.WarnEntryCount > 0;
+            lblErrorCount.Content = hits.ErrorEntryCount.ToString("###,###,##0");
+            lblErrorCount.IsEnabled = hits.ErrorEntryCount > 0;
+            lblDebugCount.Content = hits.DebugEntryCount.ToString("###,###,##0");
+            lblDebugCount.IsEnabled = hits.DebugEntryCount > 0;
+
+            updateDateRangeDisplay(hits.FilteredMinTime, hits.FilteredMaxTime);
+
+            // Reflect the drilled set on the chart with its real level distribution over its own span.
+            var series = repo.GetTimeSeriesForIds(ids, 120);
+            levelChart.SetData(series);
+
+            resultsGrid.SetLogEntries(hits);
         }
 
         /// <summary>

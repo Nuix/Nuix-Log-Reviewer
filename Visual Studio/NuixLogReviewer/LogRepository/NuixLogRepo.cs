@@ -1,5 +1,4 @@
-﻿using Lucene.Net.Documents;
-using NuixLogReviewer.LogRepository.Classifiers;
+﻿using NuixLogReviewer.LogRepository.Classifiers;
 using NuixLogReviewerObjects;
 using System;
 using System.Collections.Concurrent;
@@ -56,15 +55,13 @@ namespace NuixLogReviewer.LogRepository
                 pb = new ProgressBroadcaster();
             }
 
-            // Drop index and we will rebuild all at once after we have pulled in all the records
+            // Drop the LogEntry indexes so bulk inserts are fast; we rebuild them after load.
+            // (Lookup-table indexes are created at DB init and left in place - they speed up
+            // the Value lookups that happen during load.)
             pb.BroadcastStatus("Dropping database indexes...");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_EntryID;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_TimeStamp;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LineNumber;");
-            Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_FilenameID;");
-            Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_ChannelID;");
-            Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LevelID;");
-            Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_SourceID;");
 
             long overallRecordCount = 0;
 
@@ -80,15 +77,11 @@ namespace NuixLogReviewer.LogRepository
             SearchIndex.EndWrite();
 
             // SQLite is faster building whole index at once rather than on each insert, so earlier
-            // we dropped the index and now we rebuild it
+            // we dropped the LogEntry indexes and now we rebuild them.
             pb.BroadcastStatus("Rebuilding database indexes...");
             Database.ExecuteNonQuery("CREATE INDEX IDX_EntryID ON LogEntry (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_TimeStamp ON LogEntry (TimeStamp);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_LineNumber ON LogEntry (LineNumber);");
-            Database.ExecuteNonQuery("CREATE INDEX IDX_FilenameID ON FileName (ID);");
-            Database.ExecuteNonQuery("CREATE INDEX IDX_ChannelID ON Channel (ID);");
-            Database.ExecuteNonQuery("CREATE INDEX IDX_LevelID ON Level (ID);");
-            Database.ExecuteNonQuery("CREATE INDEX IDX_SourceID ON Level (ID);");
         }
 
         /// <summary>
@@ -218,49 +211,20 @@ namespace NuixLogReviewer.LogRepository
             }), TaskCreationOptions.LongRunning);
 
             // ==== Series of Tasks Dedicated to Adding Entries to Lucene Index ====
+            // All Lucene Document construction lives in LogSearchIndex.IndexLogEntry(entry) so the
+            // write-time field configuration stays in one place and can't drift from the query-time
+            // analyzer configuration. IndexWriter.AddDocument is thread-safe, so we can fan this out.
             Task[] indexers = new Task[indexingConcurrency];
             for (int i = 0; i < indexingConcurrency; i++)
             {
                 Task indexConsumer = new Task(new Action(() =>
                 {
-                    NumericField idField = new NumericField("id", Field.Store.YES, true);
-                    NumericField lineField = new NumericField("line");
-                    Field channelField = new Field("channel", "", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
-                    Field levelField = new Field("level", "", Field.Store.NO, Field.Index.ANALYZED);
-                    Field sourceField = new Field("source", "", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
-                    Field contentField = new Field("content", "", Field.Store.NO, Field.Index.ANALYZED);
-                    Field existsFields = new Field("exists", "yes", Field.Store.NO, Field.Index.ANALYZED_NO_NORMS);
-                    NumericField dateField = new NumericField("date");
-                    Field flagsField = new Field("flag", "", Field.Store.NO, Field.Index.ANALYZED);
-
-                    Document doc = new Document();
-                    doc.Add(existsFields);
-                    doc.Add(idField);
-                    doc.Add(lineField);
-                    doc.Add(channelField);
-                    doc.Add(levelField);
-                    doc.Add(sourceField);
-                    doc.Add(contentField);
-                    doc.Add(dateField);
-                    doc.Add(flagsField);
-
                     while (true)
                     {
                         NuixLogEntry entry = toIndex.Take();
                         if (entry == null) { break; }
 
-                        // Push to Lucene
-                        idField.SetLongValue(entry.ID);
-                        lineField.SetLongValue(entry.LineNumber);
-                        channelField.SetValue(entry.Channel);
-                        levelField.SetValue(entry.Level);
-                        sourceField.SetValue(entry.Source);
-                        contentField.SetValue(entry.Content);
-                        long date = (entry.TimeStamp.Year * 10000) + (entry.TimeStamp.Month * 100) + entry.TimeStamp.Day;
-                        dateField.SetLongValue(date);
-                        flagsField.SetValue(String.Join(" ", entry.Flags));
-
-                        SearchIndex.IndexLogEntry(doc);
+                        SearchIndex.IndexLogEntry(entry);
                     }
 
                     pb.BroadcastProgress(recordCount);
@@ -294,6 +258,65 @@ namespace NuixLogReviewer.LogRepository
             return recordCount;
         }
 
+        /// <summary>
+        /// Oldest event time across the loaded set, or null if nothing is loaded. Derived from the
+        /// search index timestamp bounds computed at load time.
+        /// </summary>
+        public DateTime? LoadedMinTime =>
+            SearchIndex.MinTimestampTicks.HasValue ? new DateTime(SearchIndex.MinTimestampTicks.Value) : (DateTime?)null;
+
+        /// <summary>
+        /// Newest event time across the loaded set, or null if nothing is loaded.
+        /// </summary>
+        public DateTime? LoadedMaxTime =>
+            SearchIndex.MaxTimestampTicks.HasValue ? new DateTime(SearchIndex.MaxTimestampTicks.Value) : (DateTime?)null;
+
+        /// <summary>
+        /// Time-bucketed INFO/WARN/ERROR counts for the given query's matched set, for the chart.
+        /// </summary>
+        public LogSearchIndex.TimeSeries GetTimeSeries(string query, int buckets)
+        {
+            return SearchIndex.BucketedLevelCounts(query, buckets);
+        }
+
+        /// <summary>
+        /// Mines the given query's matched set into normalized message-template groups (the Patterns
+        /// view), each with a count, first/last-seen and the contributing entry ids for drill-down.
+        /// </summary>
+        public IList<LogSearchIndex.LogPattern> GetPatterns(string query)
+        {
+            return SearchIndex.MinePatterns(query);
+        }
+
+        /// <summary>
+        /// Builds a grid response containing exactly the entries with the given ids (used by the
+        /// Patterns view drill-down). Level counts and the time span are summarized from the index so
+        /// the status readouts and chart stay consistent with the shown rows.
+        /// </summary>
+        public LogEntrySearchResponse BuildResponseForIds(IList<long> ids)
+        {
+            var response = new LogEntrySearchResponse(new NuixLogEntryItemProvider()
+            {
+                Ids = ids,
+                SourceRepository = this
+            }, 1000);
+
+            var summary = SearchIndex.SummarizeIds(ids);
+            response.InfoEntryCount = summary.Info;
+            response.WarnEntryCount = summary.Warn;
+            response.ErrorEntryCount = summary.Error;
+            response.DebugEntryCount = summary.Debug;
+            response.FilteredMinTime = summary.MinTicks.HasValue ? new DateTime(summary.MinTicks.Value) : (DateTime?)null;
+            response.FilteredMaxTime = summary.MaxTicks.HasValue ? new DateTime(summary.MaxTicks.Value) : (DateTime?)null;
+            return response;
+        }
+
+        /// <summary>Time-series (bucketed level counts) for an explicit id set, for the Patterns drill-down chart.</summary>
+        public LogSearchIndex.TimeSeries GetTimeSeriesForIds(IList<long> ids, int buckets)
+        {
+            return SearchIndex.BucketedLevelCountsForIds(ids, buckets);
+        }
+
         public LogEntrySearchResponse Search(string query)
         {
             IList<long> ids = SearchIndex.Search(this, query);
@@ -303,21 +326,27 @@ namespace NuixLogReviewer.LogRepository
                 SourceRepository = this
             }, 1000);
 
-            // For the given search result we want to be able to additionally report how many
-            // are each log level
-            if (String.IsNullOrWhiteSpace(query))
+            // Everything the status bar / Classifiers table needs about the matched set - per-level
+            // counts, per-flag counts and the event-time span - is computed in ONE doc-values pass.
+            // This replaces the old approach of running a separate Lucene count per level plus one
+            // per classifier flag (and a DISTINCT(Flags) DB scan), which made broad queries such as
+            // the blank "clear search" slow (it scanned the whole index ~25-30 times).
+            var summary = SearchIndex.SummarizeFilteredSet(query);
+
+            result.InfoEntryCount = summary.Info;
+            result.WarnEntryCount = summary.Warn;
+            result.ErrorEntryCount = summary.Error;
+            result.DebugEntryCount = summary.Debug;
+
+            result.FilteredMinTime = summary.MinTicks.HasValue ? new DateTime(summary.MinTicks.Value) : (DateTime?)null;
+            result.FilteredMaxTime = summary.MaxTicks.HasValue ? new DateTime(summary.MaxTicks.Value) : (DateTime?)null;
+
+            // Per-classifier counts for the current filtered set. Only flags actually present in the
+            // matched set are reported (the collector only sees flags it encounters), which is exactly
+            // what the UI wants - it hides zero-count flags anyway.
+            foreach (var kv in summary.FlagCounts)
             {
-                result.InfoEntryCount = SearchIndex.Count(this, "level:info");
-                result.WarnEntryCount = SearchIndex.Count(this, "level:warn");
-                result.ErrorEntryCount = SearchIndex.Count(this, "level:error");
-                result.DebugEntryCount = SearchIndex.Count(this, "level:debug");
-            }
-            else
-            {
-                result.InfoEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:info", query));
-                result.WarnEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:warn", query));
-                result.ErrorEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:error", query));
-                result.DebugEntryCount = SearchIndex.Count(this, String.Format("({0}) AND level:debug", query));
+                result.FlagCounts[kv.Key] = kv.Value;
             }
 
             return result;
@@ -327,8 +356,41 @@ namespace NuixLogReviewer.LogRepository
         {
             if (!RepoDisposed)
             {
-                Directory.Delete(RepoDirectory, true);
-                RepoDisposed = true;
+                try
+                {
+                    // Dispose resources first to release file locks
+                    SearchIndex?.Dispose();
+                    // Database doesn't implement IDisposable, but connections are auto-closed
+                    
+                    // Small delay to ensure file handles are released
+                    System.Threading.Thread.Sleep(100);
+                    
+                    // Now delete the directory
+                    if (Directory.Exists(RepoDirectory))
+                    {
+                        Directory.Delete(RepoDirectory, true);
+                    }
+                }
+                catch (Exception)
+                {
+                    // If deletion fails, try again after a longer delay
+                    System.Threading.Thread.Sleep(500);
+                    try
+                    {
+                        if (Directory.Exists(RepoDirectory))
+                        {
+                            Directory.Delete(RepoDirectory, true);
+                        }
+                    }
+                    catch
+                    {
+                        // If it still fails, ignore - the temp directory will be cleaned up eventually
+                    }
+                }
+                finally
+                {
+                    RepoDisposed = true;
+                }
             }
         }
 

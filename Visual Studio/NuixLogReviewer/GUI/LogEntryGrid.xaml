@@ -13,11 +13,16 @@
             <DataGrid.Resources>
                 <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="DarkGray"/>
             </DataGrid.Resources>
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Pivot Around Event Time..." Name="menuPivotAroundEvent" Click="menuPivotAroundEvent_Click"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <!-- <DataGridTextColumn Header="ID" Binding="{Binding ID}" FontFamily="Consolas"/> -->
                 <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas"/>
                 <DataGridTextColumn Header="Line" Binding="{Binding LineNumber}" FontFamily="Consolas"/>
-                <DataGridTextColumn Header="Time" Binding="{Binding TimeStamp}" FontFamily="Consolas"/>
+                <DataGridTextColumn Header="Time" Binding="{Binding TimeStamp, StringFormat=yyyy-MM-dd HH:mm:ss.fff}" FontFamily="Consolas"/>
                 <!--<DataGridTextColumn Header="Channel" Binding="{Binding Channel}" FontFamily="Consolas"/>-->
                 <DataGridTextColumn Header="Level" Binding="{Binding Level}" FontFamily="Consolas"/>
                 <!--<DataGridTextColumn Header="Source" Binding="{Binding Source}" FontFamily="Consolas"/>-->

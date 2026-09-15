@@ -143,9 +143,9 @@ namespace NuixLogReviewer.LogRepository
                     {
                         command.Parameters.AddWithValue(parameter.Name, parameter.Value);
                     }
-
-                    command.ExecuteNonQuery();
                 }
+
+                command.ExecuteNonQuery();
             }
         }
 

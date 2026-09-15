@@ -39,70 +39,85 @@ namespace NuixLogReviewer.LogRepository
 
         public long GetFilenameID(string fileName)
         {
-            if (filenameIdCache.ContainsKey(fileName))
-            {
-                return filenameIdCache[fileName];
-            }
-            else
-            {
-                FlushAllBatchInserters();
-                ExecuteNonQuery("INSERT INTO FileName (Value) VALUES (@filename)", new NamedValue("@filename", fileName));
-                long id = ExecuteScalar<long>("SELECT ID FROM FileName WHERE Value == @filename", new NamedValue("@filename", fileName));
-                filenameIdCache[fileName] = id;
-                ReinitializeAllBatchInserters();
-                return id;
-            }
+            return GetOrCreateLookupId("FileName", fileName, filenameIdCache);
         }
 
         public long GetLevelID(string level)
         {
-            if (levelIdCache.ContainsKey(level))
-            {
-                return levelIdCache[level];
-            }
-            else
-            {
-                FlushAllBatchInserters();
-                ExecuteNonQuery("INSERT INTO Level (Value) VALUES (@level)", new NamedValue("@level", level));
-                long id = ExecuteScalar<long>("SELECT ID FROM Level WHERE Value == @level", new NamedValue("@level", level));
-                levelIdCache[level] = id;
-                ReinitializeAllBatchInserters();
-                return id;
-            }
+            return GetOrCreateLookupId("Level", level, levelIdCache);
         }
 
         public long GetSourceID(string source)
         {
-            if (sourceIdCache.ContainsKey(source))
-            {
-                return sourceIdCache[source];
-            }
-            else
-            {
-                FlushAllBatchInserters();
-                ExecuteNonQuery("INSERT INTO Source (Value) VALUES (@source)", new NamedValue("@source", source));
-                long id = ExecuteScalar<long>("SELECT ID FROM Source WHERE Value == @source", new NamedValue("@source", source));
-                sourceIdCache[source] = id;
-                ReinitializeAllBatchInserters();
-                return id;
-            }
+            return GetOrCreateLookupId("Source", source, sourceIdCache);
         }
 
         public long GetChannelID(string channel)
         {
-            if (channelIdCache.ContainsKey(channel))
+            return GetOrCreateLookupId("Channel", channel, channelIdCache);
+        }
+
+        // Lookup-table names are fixed, internal constants (never user input), so building the
+        // SQL with the table name is safe from injection. The Value is always parameterized.
+        // We use a plain INSERT ... RETURNING on the (cache-guaranteed) new value so the
+        // AUTOINCREMENT sequence stays gap-free; a UNIQUE-constraint violation only happens on
+        // the defensive path (value already present), where we fall back to a SELECT.
+        private static readonly Dictionary<string, string> LookupInsertSql = new Dictionary<string, string>
+        {
+            ["FileName"] = "INSERT INTO FileName (Value) VALUES (@value) RETURNING ID;",
+            ["Channel"]  = "INSERT INTO Channel (Value) VALUES (@value) RETURNING ID;",
+            ["Level"]    = "INSERT INTO Level (Value) VALUES (@value) RETURNING ID;",
+            ["Source"]   = "INSERT INTO Source (Value) VALUES (@value) RETURNING ID;",
+        };
+
+        private static readonly Dictionary<string, string> LookupSelectSql = new Dictionary<string, string>
+        {
+            ["FileName"] = "SELECT ID FROM FileName WHERE Value = @value;",
+            ["Channel"]  = "SELECT ID FROM Channel WHERE Value = @value;",
+            ["Level"]    = "SELECT ID FROM Level WHERE Value = @value;",
+            ["Source"]   = "SELECT ID FROM Source WHERE Value = @value;",
+        };
+
+        /// <summary>
+        /// Returns the ID for the given Value in the named lookup table, inserting a new row if it
+        /// does not yet exist. Results are cached in memory so each distinct value hits the DB once.
+        /// </summary>
+        /// <remarks>
+        /// On the normal path (fresh per-run DB, value not yet cached) this is a single
+        /// INSERT ... RETURNING round-trip, kept gap-free by relying on the in-memory cache to
+        /// guarantee we only insert genuinely-new values. If the value already exists (a defensive
+        /// case, e.g. a re-used DB), the UNIQUE index on Value raises a constraint violation and we
+        /// fall back to a SELECT. This replaces the previous approach that always did a separate
+        /// INSERT then SELECT on two fresh connections.
+        ///
+        /// The batch inserters are still flushed around the call: this method runs on a separate
+        /// connection while the main LogEntry batch inserter holds an open write transaction, and
+        /// SQLite locks the whole database during a write (JournalMode=Off, Pooling=false), so a
+        /// concurrent write from another connection would otherwise fail with SQLITE_BUSY. Because
+        /// results are cached, the flush only happens once per distinct value.
+        /// </remarks>
+        private long GetOrCreateLookupId(string tableName, string value, Dictionary<string, long> cache)
+        {
+            if (cache.TryGetValue(value, out long cachedId))
             {
-                return channelIdCache[channel];
+                return cachedId;
             }
-            else
+
+            FlushAllBatchInserters();
+            long id;
+            try
             {
-                FlushAllBatchInserters();
-                ExecuteNonQuery("INSERT INTO Channel (Value) VALUES (@channel)", new NamedValue("@channel", channel));
-                long id = ExecuteScalar<long>("SELECT ID FROM Channel WHERE Value == @channel", new NamedValue("@channel", channel));
-                channelIdCache[channel] = id;
-                ReinitializeAllBatchInserters();
-                return id;
+                id = ExecuteScalar<long>(LookupInsertSql[tableName], new NamedValue("@value", value));
             }
+            catch (SQLiteException ex) when (ex.ResultCode == SQLiteErrorCode.Constraint)
+            {
+                // Value already exists (defensive path) - look up its existing ID instead.
+                id = ExecuteScalar<long>(LookupSelectSql[tableName], new NamedValue("@value", value));
+            }
+            ReinitializeAllBatchInserters();
+
+            cache[value] = id;
+            return id;
         }
 
         public List<long> GetAllIds()

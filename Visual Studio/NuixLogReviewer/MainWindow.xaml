@@ -9,6 +9,52 @@
         Title="Nuix Log Reviewer" Height="768" Width="1024"
         Closing="Window_Closing">
 
+    <Window.Resources>
+        <!--
+          Header style for the Patterns grid that shows a sort-direction arrow on the active column.
+          The arrow is driven by each header's Tag: "asc" shows an up arrow, "desc" a down arrow, and
+          anything else (empty/null) hides it. The code-behind (patternList_ColumnHeaderClick) sets
+          the active header's Tag and clears the others, so exactly one arrow is visible at a time.
+          Content stays the plain header string, so the click handler's string checks still hold.
+        -->
+        <Style x:Key="SortableHeaderStyle" TargetType="GridViewColumnHeader">
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="GridViewColumnHeader">
+                        <Grid>
+                            <Border Background="Transparent" BorderBrush="#FFC4C4C4" BorderThickness="0,0,1,1" Padding="6,3">
+                                <DockPanel LastChildFill="True">
+                                    <!-- Sort arrow, docked right of the header text. -->
+                                    <Path x:Name="SortArrow" DockPanel.Dock="Right"
+                                          Width="8" Height="8" Margin="6,0,0,0"
+                                          VerticalAlignment="Center" Stretch="Uniform"
+                                          Fill="#FF505050" Visibility="Collapsed"
+                                          Data="M 0,0 L 8,0 L 4,5 Z"/>
+                                    <ContentPresenter Content="{TemplateBinding Content}"
+                                                      VerticalAlignment="Center"
+                                                      HorizontalAlignment="Left"/>
+                                </DockPanel>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <!-- Descending: down-pointing triangle (the default Data above). -->
+                            <Trigger Property="Tag" Value="desc">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="SortArrow" Property="Data" Value="M 0,0 L 8,0 L 4,5 Z"/>
+                            </Trigger>
+                            <!-- Ascending: up-pointing triangle. -->
+                            <Trigger Property="Tag" Value="asc">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="SortArrow" Property="Data" Value="M 0,5 L 8,5 L 4,0 Z"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="5">
         <Grid.RowDefinitions>
             <RowDefinition Height="auto"/>
@@ -46,7 +92,7 @@
                         <Image Source="zoom_in.png"/>
                     </MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="_Repalce Current Search With..." Name="menuReplaceSearch">
+                <MenuItem Header="_Replace Current Search With..." Name="menuReplaceSearch">
                     <MenuItem.Icon>
                         <Image Source="zoom.png"/>
                     </MenuItem.Icon>
@@ -58,12 +104,12 @@
                 <RowDefinition Height="auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="auto"/>
+                <RowDefinition Height="auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="5">
+            <Grid Grid.Row="0" Grid.Column="0" Margin="5">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="auto"/>
                     <ColumnDefinition Width="auto"/>
@@ -91,9 +137,10 @@
                 </Button>
                 
             </Grid>
-            <local:LogEntryGrid x:Name="resultsGrid" Grid.Row="1" Grid.Column="1" SelectedLogEntryChanged="resultsGrid_SelectedLogEntryChanged" Margin="2"/>
-            <ListBox x:Name="flagList" Grid.Row="1" Grid.Column="0" MouseDoubleClick="flagList_MouseDoubleClick" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
-            <StatusBar Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2">
+            <local:LogEntryGrid x:Name="resultsGrid" Grid.Row="1" Grid.Column="0" SelectedLogEntryChanged="resultsGrid_SelectedLogEntryChanged" PivotAroundEntryRequested="resultsGrid_PivotAroundEntryRequested" VisibleRangeChanged="resultsGrid_VisibleRangeChanged" Margin="2"/>
+            <local:LevelTimeChart x:Name="levelChart" Grid.Row="2" Grid.Column="0"
+                                   Height="48" Margin="2,2,2,0"/>
+            <StatusBar Grid.Row="3" Grid.Column="0">
                 <Label Content="Records:" FontWeight="Bold"/>
                 <Label Name="lblRecordCounts" Content="0 / 0"/>
                 <Label Content="INFO:" FontWeight="Bold"/>
@@ -132,10 +179,82 @@
                     </Button.Resources>
                     <Button.ToolTip>Click this to filter down to only DEBUG entries.</Button.ToolTip>
                 </Button>
+                <Separator/>
+                <Label Content="Range:" FontWeight="Bold"/>
+                <Label Name="lblDateRange" Content="—">
+                    <Label.ToolTip>Time span of the currently loaded log set (oldest to newest event).</Label.ToolTip>
+                </Label>
             </StatusBar>
         </Grid>
         <GridSplitter Grid.Row="2" Height="8" HorizontalAlignment="Stretch"/>
-        <local:LogEntryViewer x:Name="logEntryViewer" Grid.Row="3" Margin="2"/>
+        <TabControl x:Name="bottomTabs" Grid.Row="3" Margin="2">
+            <TabItem Header="Details" x:Name="tabDetails">
+                <local:LogEntryViewer x:Name="logEntryViewer"/>
+            </TabItem>
+            <TabItem Header="Classifiers">
+                <ListView x:Name="flagList" MouseDoubleClick="flagList_MouseDoubleClick"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Classifier" DisplayMemberBinding="{Binding Name}" Width="220"/>
+                            <GridViewColumn Header="Count" DisplayMemberBinding="{Binding Count, StringFormat='{}{0:N0}'}" Width="80"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </TabItem>
+            <TabItem Header="Patterns" x:Name="tabPatterns">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" LastChildFill="False" Margin="2">
+                        <Button x:Name="btnComputePatterns" DockPanel.Dock="Left" Content="Compute Patterns"
+                                Click="btnComputePatterns_Click" Padding="6,2"
+                                ToolTip="Group the current results by normalized message template."/>
+                        <CheckBox x:Name="chkRareFirst" DockPanel.Dock="Left" Content="Rare first"
+                                  IsChecked="True"
+                                  VerticalAlignment="Center" Margin="10,0,0,0" Click="chkRareFirst_Click"
+                                  ToolTip="Sort by count ascending to surface the rare one-off patterns."/>
+                    </DockPanel>
+                    <ListView x:Name="patternList" Grid.Row="1" MouseDoubleClick="patternList_MouseDoubleClick"
+                              GridViewColumnHeader.Click="patternList_ColumnHeaderClick"
+                              SelectionMode="Extended"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.CommandBindings>
+                            <CommandBinding Command="Copy" Executed="patternCopyRows_Executed" CanExecute="patternCopy_CanExecute"/>
+                        </ListView.CommandBindings>
+                        <ListView.InputBindings>
+                            <!-- Ctrl+C copies the full selected rows (tab-separated). -->
+                            <KeyBinding Key="C" Modifiers="Control" Command="Copy"/>
+                        </ListView.InputBindings>
+                        <ListView.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Copy" Click="patternCopyRows_Click"
+                                          ToolTip="Copy the selected rows (Count, First/Last Seen, Pattern) as tab-separated text."/>
+                                <MenuItem Header="Copy Pattern(s) Only" Click="patternCopyTemplates_Click"
+                                          ToolTip="Copy just the pattern template text of the selected rows, one per line."/>
+                            </ContextMenu>
+                        </ListView.ContextMenu>
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="ToolTip" Value="{Binding Template}"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.View>
+                            <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
+                                <GridViewColumn Header="Count" DisplayMemberBinding="{Binding Count, StringFormat='{}{0:N0}'}" Width="70"/>
+                                <GridViewColumn Header="First Seen" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                <GridViewColumn Header="Last Seen" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                <GridViewColumn Header="Pattern" DisplayMemberBinding="{Binding Template}" Width="900"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </Grid>
+            </TabItem>
+        </TabControl>
         <Border Name="busyOverlay" BorderBrush="Black" BorderThickness="1" Visibility="Collapsed" Grid.Row="0" Grid.RowSpan="4">
             <Border.Background>
                 <SolidColorBrush Color="#000000" Opacity="0.25"/>

@@ -1,0 +1,43 @@
+﻿<UserControl x:Class="NuixLogReviewer.GUI.LevelTimeChart"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="60" d:DesignWidth="800"
+             Background="#FFFAFAFA">
+    <Grid>
+        <!-- The bars are drawn onto this canvas; the selection rectangle and drag handling live here too. -->
+        <Canvas x:Name="chartCanvas" ClipToBounds="True"
+                Background="Transparent"
+                SizeChanged="chartCanvas_SizeChanged"
+                MouseLeftButtonDown="chartCanvas_MouseLeftButtonDown"
+                MouseMove="chartCanvas_MouseMove"
+                MouseLeftButtonUp="chartCanvas_MouseLeftButtonUp"
+                MouseLeave="chartCanvas_MouseLeave">
+            <!-- Selection highlight rectangle (shown during/after a drag). -->
+            <Rectangle x:Name="selectionRect" Fill="#402979FF" Stroke="#FF2979FF" StrokeThickness="1"
+                       Visibility="Collapsed" Canvas.Top="0"/>
+
+            <!-- Thin vertical line marking the cursor position on hover. -->
+            <Rectangle x:Name="hoverLine" Width="1" Fill="#FF555555" Visibility="Collapsed" Canvas.Top="0"/>
+
+            <!-- Marker line for the currently selected grid row's event time. -->
+            <Rectangle x:Name="selectionMarker" Width="2" Fill="#FF1565C0" Visibility="Collapsed" Canvas.Top="0"/>
+
+            <!-- Shaded band showing the time span of the rows currently visible in the grid. -->
+            <Rectangle x:Name="visibleBand" Fill="#22000000" Stroke="#551565C0" StrokeThickness="1"
+                       Visibility="Collapsed" Canvas.Top="0"/>
+
+            <!-- Floating readout showing the time under the cursor, or the selection start/end. -->
+            <Border x:Name="readout" Background="#E6202020" CornerRadius="2" Padding="4,1"
+                    Visibility="Collapsed" IsHitTestVisible="False">
+                <TextBlock x:Name="readoutText" Foreground="White" FontFamily="Consolas" FontSize="11"/>
+            </Border>
+        </Canvas>
+
+        <!-- Placeholder / loading text shown when there is no data or a computation is in flight. -->
+        <TextBlock x:Name="lblPlaceholder" Text="" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Foreground="Gray" IsHitTestVisible="False"/>
+    </Grid>
+</UserControl>

@@ -23,17 +23,24 @@ namespace NuixLogReviewer.LogRepository
 
         public static string TimestampExpression
         {
-            get { return @"^(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+[\+\-]?\d{4})\s+"; }
+            // The timezone offset (e.g. "+0000") is optional: classic Nuix Workstation logs include
+            // it, but Automate logs (scheduler/engine-server/engine job/init) do not.
+            get { return @"^(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)(?:\s+(?<tz>[\+\-]?\d{4}))?\s+"; }
         }
 
         public static string ChannelExpression
         {
-            get { return @"\[(?<channel>[^\\]+)\]\s"; }
+            // Channel may itself contain nested brackets, e.g.
+            // "[JMX Monitor ThreadGroup<main> Executor Pool [Thread-1]]". Use a greedy capture that
+            // backtracks to the closing bracket followed by the elapsed/level structure.
+            get { return @"\[(?<channel>.+)\]\s+"; }
         }
 
         public static string ElapsedExpression
         {
-            get { return @"(?<elapsed>\d+)\s"; }
+            // Elapsed (milliseconds since start) is present in classic Workstation logs but absent
+            // from Automate logs, so it is optional.
+            get { return @"(?:(?<elapsed>\d+)\s+)?"; }
         }
 
         public static string LevelExpression
@@ -128,15 +135,39 @@ namespace NuixLogReviewer.LogRepository
 
                                 current = new NuixLogEntry();
 
-                                TimeSpan parsedElapsed = TimeSpan.Zero;
-
                                 current.LineNumber = lineNumber;
                                 current.FilePath = FilePath;
                                 current.FileName = Path.GetFileName(FilePath);
                                 currentContent.AppendLine(parsed.Groups["content"].Value);
-                                current.TimeStamp = DateTime.ParseExact(parsed.Groups["timestamp"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
+
+                                // Timezone offset is optional (classic logs have it, Automate logs
+                                // do not). Parse with the offset when present so the instant is
+                                // preserved; otherwise treat the timestamp as local/unspecified.
+                                string timestampText = parsed.Groups["timestamp"].Value;
+                                if (parsed.Groups["tz"].Success && parsed.Groups["tz"].Value.Length > 0)
+                                {
+                                    current.TimeStamp = DateTime.ParseExact(
+                                        timestampText + " " + parsed.Groups["tz"].Value,
+                                        "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
+                                }
+                                else
+                                {
+                                    current.TimeStamp = DateTime.ParseExact(
+                                        timestampText, "yyyy-MM-dd HH:mm:ss.fff", culture);
+                                }
+
                                 current.Channel = parsed.Groups["channel"].Value.Trim();
-                                current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
+
+                                // Elapsed is optional (absent from Automate logs).
+                                if (parsed.Groups["elapsed"].Success && parsed.Groups["elapsed"].Value.Length > 0)
+                                {
+                                    current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
+                                }
+                                else
+                                {
+                                    current.Elapsed = TimeSpan.Zero;
+                                }
+
                                 current.Level = String.Intern(parsed.Groups["level"].Value.Trim()); // Intern since we know there is a small set of possible values
                                 current.Source = parsed.Groups["source"].Value.Trim();
                             }

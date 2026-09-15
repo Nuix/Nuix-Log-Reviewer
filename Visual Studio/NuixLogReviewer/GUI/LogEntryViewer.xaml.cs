@@ -50,7 +50,7 @@ namespace NuixLogReviewer.GUI
             }
             else
             {
-                txtTimeStamp.Text = entry.TimeStamp.ToString();
+                txtTimeStamp.Text = entry.TimeStamp.ToString("yyyy-MM-dd HH:mm:ss.fff");
                 txtElapsed.Text = entry.Elapsed.ToString();
                 txtLevel.Text = entry.Level;
                 txtLineNumber.Text = entry.LineNumber.ToString();
