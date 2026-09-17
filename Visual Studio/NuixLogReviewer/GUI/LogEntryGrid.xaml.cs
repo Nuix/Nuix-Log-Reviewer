@@ -83,9 +83,16 @@ namespace NuixLogReviewer.GUI
                 resultsGrid.SelectedItem = entry;
                 resultsGrid.ScrollIntoView(entry);
                 resultsGrid.UpdateLayout();
-                // ScrollIntoView aligns to the nearest edge; nudging to the item again after layout
-                // gives a stable, roughly-centered view of the pivot row within the loaded context.
+                // Best-effort center within the viewport. With variable-height rows this offset is only
+                // an estimate under item-scrolling, so it may not land exactly.
                 CenterRow(index, entries.Count);
+                resultsGrid.UpdateLayout();
+                // Safety net: ScrollIntoView is WPF's reliable "bring this item on screen" primitive.
+                // Running it AFTER the centering nudge guarantees the target row is actually visible even
+                // when the centering estimate was off (the common cause of "scrolled near but not to" the
+                // clicked location). If centering already made it visible this is a no-op; otherwise it
+                // scrolls the minimum needed to reveal it.
+                resultsGrid.ScrollIntoView(entry);
                 ReportVisibleRange();
 
                 // Bring keyboard focus onto the selected row's container so the selection reads as the

@@ -59,6 +59,7 @@ namespace NuixLogReviewer
 
             levelChart.TimeRangeSelected += levelChart_TimeRangeSelected;
             levelChart.TimeClicked += levelChart_TimeClicked;
+            levelChart.ResolutionChanged += levelChart_ResolutionChanged;
 
             rebuildSavedSearchesMenu();
         }
@@ -163,12 +164,42 @@ namespace NuixLogReviewer
             // Use the SAME effective query the grid is showing (base query AND NOT hidden classifiers),
             // so the closest-event id we find is actually present in the current view and can be
             // selected. Using the bare search text could return a hidden entry that isn't in the grid.
-            string effectiveQuery = composeEffectiveQuery(txtSearchQuery.Text, buildHiddenFilter());
+            string effectiveQuery = buildEffectiveQuery(txtSearchQuery.Text);
             long? id = repo.FindEntryIdAtOrBefore(effectiveQuery, ticks);
             if (id.HasValue)
             {
                 resultsGrid.SelectAndScrollTo(id.Value);
             }
+        }
+
+        /// <summary>
+        /// How to (re-)fetch the currently-charted time series at a given bucket count. Set by whatever
+        /// last populated the chart: the search path (effective query) or an id-set drill-down. Lets a
+        /// chart resize re-bucket the same data at a finer/coarser resolution. Null before any chart.
+        /// </summary>
+        private Func<int, LogSearchIndex.TimeSeries> _chartSource;
+
+        /// <summary>
+        /// Re-fetches the current chart source at the chart's new desired resolution (off the UI thread,
+        /// like the other chart fetches) and updates the chart. Triggered by the chart when a resize
+        /// changes how many time-slices it wants.
+        /// </summary>
+        private void levelChart_ResolutionChanged(int buckets)
+        {
+            var source = _chartSource;
+            if (source == null || repo == null || repo.Database.TotalRecords < 1) { return; }
+
+            Task.Run(() =>
+            {
+                LogSearchIndex.TimeSeries series;
+                try { series = source(buckets); }
+                catch { return; } // transient (e.g. repo reset mid-resize); ignore, next fetch recovers
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    levelChart.UpdateResolution(series);
+                    levelChart.MarkRequested(buckets);
+                }));
+            });
         }
 
         /// <summary>
@@ -373,8 +404,7 @@ namespace NuixLogReviewer
             // but never written into the search box. Classifier counts + the "excluded" figure are
             // computed on the BASE query so hidden classifiers still show their real counts and can be
             // un-hidden.
-            string hiddenFilter = buildHiddenFilter();
-            string effectiveQuery = composeEffectiveQuery(baseQuery, hiddenFilter);
+            string effectiveQuery = buildEffectiveQuery(baseQuery);
 
             logEntryViewer.Clear();
             levelChart.ShowPlaceholder("Charting...");
@@ -397,7 +427,12 @@ namespace NuixLogReviewer
                 {
                     // Effective (hidden-filtered) set drives the grid, level readouts, range and chart.
                     LogEntrySearchResponse hits = repo.Search(effectiveQuery);
-                    var series = repo.GetTimeSeries(effectiveQuery, 120);
+                    // Chart resolution scales with the chart's rendered width (see LevelTimeChart);
+                    // remember how to re-fetch this series so a resize can re-bucket it.
+                    int chartBuckets = levelChart.CurrentDesiredBucketCount;
+                    string chartQuery = effectiveQuery;
+                    _chartSource = n => repo.GetTimeSeries(chartQuery, n);
+                    var series = repo.GetTimeSeries(effectiveQuery, chartBuckets);
 
                     // Base set (NOT hidden-filtered) drives the classifier table and the excluded count,
                     // so hidden classifiers still report their true counts.
@@ -423,6 +458,7 @@ namespace NuixLogReviewer
                         updateDateRangeDisplay(hits.FilteredMinTime, hits.FilteredMaxTime);
 
                         levelChart.SetData(series);
+                        levelChart.MarkRequested(chartBuckets);
 
                         // Classifier table from the BASE set (unfiltered by visibility). Each row's eye
                         // reflects the current session hidden-set. Zero-count flags are omitted.
@@ -440,6 +476,24 @@ namespace NuixLogReviewer
                             .ToList();
 
                         updateExcludedIndicator(excluded);
+
+                        // Files table from the BASE set (unfiltered by visibility), like classifiers.
+                        // Short display names are the shortest-unique path tails across the matched files;
+                        // the full path is the tooltip and the drill-down/hide key.
+                        var fileShortNames = LogRepository.FileDisplay.ShortUniqueNames(
+                            baseSummary.FileCounts.Where(kv => kv.Value > 0).Select(kv => kv.Key));
+                        fileList.ItemsSource = baseSummary.FileCounts
+                            .Where(kv => kv.Value > 0)
+                            .OrderByDescending(kv => kv.Value)
+                            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                            .Select(kv => new LogRepository.FileEntry
+                            {
+                                Path = kv.Key,
+                                DisplayName = fileShortNames.TryGetValue(kv.Key, out var dn) ? dn : kv.Key,
+                                Count = kv.Value,
+                                IsShown = !_hiddenFiles.Contains(kv.Key),
+                            })
+                            .ToList();
 
                         resultsGrid.SetLogEntries(hits);
 
@@ -547,7 +601,31 @@ namespace NuixLogReviewer
             return "NOT (" + ors + ")";
         }
 
-        /// <summary>Combines the user's query with the hidden-classifier filter into the effective query.</summary>
+        /// <summary>
+        /// Session set of source files (full paths, lower-cased) currently hidden from the view.
+        /// Toggled by the Files tab eye buttons; not persisted across loads.
+        /// </summary>
+        private readonly HashSet<string> _hiddenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The "hide these files" clause: NOT (file:"a" OR file:"b" ...), or "" when none.</summary>
+        private string buildHiddenFileFilter()
+        {
+            return LogRepository.FileDisplay.HideClause(_hiddenFiles);
+        }
+
+        /// <summary>
+        /// The effective query the grid/chart/counts actually run: the user's query ANDed with the
+        /// hidden-classifier and hidden-file view filters. Both are view-only (never written to the
+        /// search box). Used by the search path and the timeline click lookup.
+        /// </summary>
+        private string buildEffectiveQuery(string baseQuery)
+        {
+            string q = composeEffectiveQuery(baseQuery, buildHiddenFilter());
+            q = composeEffectiveQuery(q, buildHiddenFileFilter());
+            return q;
+        }
+
+        /// <summary>Combines a query with a NOT(...) hide clause. Handles blank query / blank clause.</summary>
         private static string composeEffectiveQuery(string baseQuery, string hiddenFilter)
         {
             if (string.IsNullOrWhiteSpace(hiddenFilter)) return baseQuery;
@@ -627,6 +705,73 @@ namespace NuixLogReviewer
             }
 
             if (changed) { performSearch(); }
+        }
+
+        /// <summary>
+        /// Toggles a file row's shown/hidden state (the eye button), updates the session hidden-file set,
+        /// and re-runs the search so the view reflects the change immediately.
+        /// </summary>
+        private void fileEyeToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (!((sender as FrameworkElement)?.Tag is LogRepository.FileEntry fe) || string.IsNullOrEmpty(fe.Path))
+            {
+                return;
+            }
+
+            fe.IsShown = !fe.IsShown;
+            if (fe.IsShown) { _hiddenFiles.Remove(fe.Path); }
+            else { _hiddenFiles.Add(fe.Path); }
+
+            performSearch();
+        }
+
+        /// <summary>Hides every currently-listed file from the view and re-runs the search.</summary>
+        private void btnHideAllFiles_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(fileList.ItemsSource is IEnumerable<LogRepository.FileEntry> rows)) { return; }
+
+            bool changed = false;
+            foreach (var fe in rows)
+            {
+                if (string.IsNullOrEmpty(fe.Path)) { continue; }
+                if (fe.IsShown) { fe.IsShown = false; changed = true; }
+                _hiddenFiles.Add(fe.Path);
+            }
+
+            if (changed) { performSearch(); }
+        }
+
+        /// <summary>Shows every file again by clearing the entire session hidden-file set, then re-runs.</summary>
+        private void btnShowAllFiles_Click(object sender, RoutedEventArgs e)
+        {
+            bool changed = _hiddenFiles.Count > 0;
+            _hiddenFiles.Clear();
+
+            if (fileList.ItemsSource is IEnumerable<LogRepository.FileEntry> rows)
+            {
+                foreach (var fe in rows)
+                {
+                    if (!fe.IsShown) { fe.IsShown = true; }
+                }
+            }
+
+            if (changed) { performSearch(); }
+        }
+
+        /// <summary>
+        /// Double-clicking a file drills the view down to just that file's entries via a real
+        /// file:"&lt;path&gt;" query (replacing the search box), so the level chips, classifier toggles
+        /// and chart compose on top of it - same approach as the Jobs double-click.
+        /// </summary>
+        private void fileList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (!(fileList.SelectedItem is LogRepository.FileEntry fe) || string.IsNullOrEmpty(fe.Path))
+            {
+                return;
+            }
+
+            txtSearchQuery.Text = LogRepository.FileDisplay.DrillDownQuery(fe.Path);
+            performSearch();
         }
 
         /// <summary>
@@ -942,8 +1087,13 @@ namespace NuixLogReviewer
             updateDateRangeDisplay(hits.FilteredMinTime, hits.FilteredMaxTime);
 
             // Reflect the drilled set on the chart with its real level distribution over its own span.
-            var series = repo.GetTimeSeriesForIds(ids, 120);
+            // Resolution scales with the chart width; remember the id-set so a resize can re-bucket it.
+            int chartBuckets = levelChart.CurrentDesiredBucketCount;
+            var chartIds = ids;
+            _chartSource = n => repo.GetTimeSeriesForIds(chartIds, n);
+            var series = repo.GetTimeSeriesForIds(ids, chartBuckets);
             levelChart.SetData(series);
+            levelChart.MarkRequested(chartBuckets);
 
             resultsGrid.SetLogEntries(hits);
         }

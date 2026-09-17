@@ -65,6 +65,7 @@ namespace NuixLogReviewer.LogRepository
                 ["channel"] = new LowerCaseKeywordAnalyzer(),
                 ["source"] = new LowerCaseKeywordAnalyzer(),
                 ["job"] = new LowerCaseKeywordAnalyzer(),
+                ["file"] = new LowerCaseKeywordAnalyzer(),
                 ["flag"] = new WhitespaceAnalyzer(Version),
                 ["exists"] = new KeywordAnalyzer(),
             };
@@ -259,6 +260,20 @@ namespace NuixLogReviewer.LogRepository
                 doc.Add(new SortedDocValuesField("job_dv", new BytesRef(jobId)));
             }
 
+            // Source file association. Indexed two ways (like job):
+            //   - "file": a searchable keyword field (whole lowercased full path as one token) so
+            //     drill-down queries like file:"<path>" and hide filters AND NOT (file:"<path>") work;
+            //   - "file_dv": a single-valued SortedDocValues column so the per-search summary can tally
+            //     per-file entry counts in the same columnar pass as flags (see FilteredSetSummary).
+            // The full path is the identity (many worker logs are all named nuix.log). Lower-cased so
+            // the doc-value key matches what the keyword analyzer produces for queries.
+            string fileKey = (entry.FilePath ?? "").ToLowerInvariant();
+            if (fileKey.Length > 0)
+            {
+                doc.Add(new TextField("file", fileKey, Field.Store.NO));
+                doc.Add(new SortedDocValuesField("file_dv", new BytesRef(fileKey)));
+            }
+
             _writer.AddDocument(doc);
         }
 
@@ -279,7 +294,14 @@ namespace NuixLogReviewer.LogRepository
         public IList<long> Search(NuixLogRepo repo, string queryString, int maxResults = 100000)
         {
             if (string.IsNullOrWhiteSpace(queryString))
-                return new AllEntriesIDList((int)repo.Database.TotalRecords);
+                // All entries, ordered by event time (ascending) so the grid's global order is truly
+                // chronological. Using a materialized time-sorted id list (rather than the old
+                // AllEntriesIDList position=>id+1 shortcut) is essential once MULTIPLE files are loaded:
+                // ids are assigned in file/load order, which is NOT the same as time order, so the
+                // shortcut mislocated an id's display row (e.g. a timeline click that resolved to a
+                // worker-log event scrolled to an unrelated engine-log row at the id's numeric position).
+                // A real time-ordered list makes both the grid order and IndexOfEntryId correct.
+                return repo.Database.GetAllIds();
 
             queryString = NotFixRegex.Replace(queryString, "NOT");
             var query = ParseQuery(queryString);
@@ -376,6 +398,11 @@ namespace NuixLogReviewer.LogRepository
             public int Debug { get; set; }
             /// <summary>Count of matched entries carrying each flag. Only flags present in the set appear.</summary>
             public Dictionary<string, int> FlagCounts { get; } = new Dictionary<string, int>();
+            /// <summary>
+            /// Count of matched entries per source file (keyed by lower-cased full path). Only files
+            /// present in the matched set appear. On a blank query this is every loaded file.
+            /// </summary>
+            public Dictionary<string, int> FileCounts { get; } = new Dictionary<string, int>();
             public long? MinTicks { get; set; }
             public long? MaxTicks { get; set; }
         }
@@ -1056,6 +1083,7 @@ namespace NuixLogReviewer.LogRepository
         private NumericDocValues _lvl;
         private NumericDocValues _ts;
         private SortedSetDocValues _flags;
+        private SortedDocValues _file;
 
         public FilteredSetSummaryCollector(LogSearchIndex.FilteredSetSummary summary)
         {
@@ -1070,6 +1098,8 @@ namespace NuixLogReviewer.LogRepository
             _ts = context.AtomicReader.GetNumericDocValues("ts_dv");
             // flag_dv may be absent for a segment where no entry carried a flag.
             _flags = context.AtomicReader.GetSortedSetDocValues("flag_dv");
+            // file_dv is single-valued; absent only if a segment had no entry with a file path.
+            _file = context.AtomicReader.GetSortedDocValues("file_dv");
         }
 
         public void Collect(int doc)
@@ -1101,6 +1131,18 @@ namespace NuixLogReviewer.LogRepository
                     string flag = _scratch.Utf8ToString();
                     _summary.FlagCounts.TryGetValue(flag, out int c);
                     _summary.FlagCounts[flag] = c + 1;
+                }
+            }
+
+            if (_file != null)
+            {
+                int ord = _file.GetOrd(doc);
+                if (ord >= 0)
+                {
+                    _file.LookupOrd(ord, _scratch);
+                    string file = _scratch.Utf8ToString();
+                    _summary.FileCounts.TryGetValue(file, out int c);
+                    _summary.FileCounts[file] = c + 1;
                 }
             }
         }

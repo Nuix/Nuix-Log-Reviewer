@@ -58,6 +58,28 @@ namespace NuixLogReviewer.GUI
         /// </summary>
         public event Action<long> TimeClicked;
 
+        /// <summary>
+        /// Raised when the chart's desired time-slice (bucket) count changes - either when it first
+        /// gets a width or when a resize crosses into a different count. The host re-fetches the time
+        /// series at this resolution and calls <see cref="SetData"/>. Debounced so a resize drag doesn't
+        /// spam re-queries.
+        /// </summary>
+        public event Action<int> ResolutionChanged;
+
+        // Dynamic time-slice resolution: aim for ~4px per bucket (bars are gapless, so this reads as a
+        // density strip and stays legible), clamped to a sensible range so a tiny window still shows a
+        // useful shape and a huge one doesn't create excessive work/elements.
+        private const double TargetBucketPx = 4.0;
+        private const int MinBuckets = 60;
+        private const int MaxBuckets = 1000;
+        /// <summary>Fallback bucket count used before the control has a real (laid-out) width.</summary>
+        public const int DefaultBuckets = 120;
+
+        // Debounce for resize-driven resolution changes.
+        private readonly System.Windows.Threading.DispatcherTimer _resizeDebounce;
+        // The bucket count we last asked the host to fetch, so we only re-query when it actually changes.
+        private int _lastRequestedBuckets = 0;
+
         static LevelTimeChart()
         {
             InfoBrush.Freeze();
@@ -72,6 +94,63 @@ namespace NuixLogReviewer.GUI
         public LevelTimeChart()
         {
             InitializeComponent();
+
+            // Coalesce rapid SizeChanged events during a resize/splitter drag into a single resolution
+            // check once the size settles.
+            _resizeDebounce = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(150),
+            };
+            _resizeDebounce.Tick += (s, e) =>
+            {
+                _resizeDebounce.Stop();
+                RaiseResolutionIfChanged();
+            };
+        }
+
+        /// <summary>
+        /// The desired number of time-slices (buckets) for a given rendered width: ~1 per
+        /// <see cref="TargetBucketPx"/> pixels, clamped to [<see cref="MinBuckets"/>,
+        /// <see cref="MaxBuckets"/>]. Returns <see cref="DefaultBuckets"/> when width is unknown (0),
+        /// i.e. before layout.
+        /// </summary>
+        public static int DesiredBucketCount(double width)
+        {
+            if (double.IsNaN(width) || width <= 0) { return DefaultBuckets; }
+            int raw = (int)Math.Round(width / TargetBucketPx);
+            if (raw < MinBuckets) { return MinBuckets; }
+            if (raw > MaxBuckets) { return MaxBuckets; }
+            return raw;
+        }
+
+        /// <summary>
+        /// The bucket count the chart currently wants, based on its laid-out width. The host uses this
+        /// for the initial fetch; subsequent changes come via <see cref="ResolutionChanged"/>.
+        /// </summary>
+        public int CurrentDesiredBucketCount => DesiredBucketCount(chartCanvas.ActualWidth);
+
+        /// <summary>
+        /// Records the bucket count the host most recently fetched at, so a subsequent resize only
+        /// raises <see cref="ResolutionChanged"/> when it lands on a genuinely different count. The host
+        /// calls this whenever it fetches a series (initial load and resolution-change re-fetches).
+        /// </summary>
+        public void MarkRequested(int buckets)
+        {
+            _lastRequestedBuckets = buckets;
+        }
+
+        /// <summary>
+        /// Raises <see cref="ResolutionChanged"/> if the width-derived bucket count differs from the
+        /// last one we requested. Records the new value so we don't re-raise for the same count.
+        /// </summary>
+        private void RaiseResolutionIfChanged()
+        {
+            int desired = CurrentDesiredBucketCount;
+            if (desired != _lastRequestedBuckets)
+            {
+                _lastRequestedBuckets = desired;
+                ResolutionChanged?.Invoke(desired);
+            }
         }
 
         /// <summary>Shows a placeholder / loading message and clears any drawn bars.</summary>
@@ -117,9 +196,35 @@ namespace NuixLogReviewer.GUI
             redraw();
         }
 
+        /// <summary>
+        /// Replaces just the charted series with a re-bucketed version of the SAME data (used when a
+        /// resize changes the desired time-slice count), preserving overlays - job spans, the selected
+        /// job, the selection marker and the visible-range band - which <see cref="SetData"/> would
+        /// otherwise reset. Redraw re-applies those overlays from their retained state.
+        /// </summary>
+        public void UpdateResolution(LogSearchIndex.TimeSeries series)
+        {
+            if (series == null || series.IsEmpty)
+            {
+                // Nothing to show at this resolution; leave the existing chart as-is rather than blanking.
+                return;
+            }
+            _series = series;
+            lblPlaceholder.Visibility = Visibility.Collapsed;
+            redraw();
+        }
+
         private void chartCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
         {
+            // Immediate relayout of the existing series to the new width keeps the strip responsive
+            // during a drag; the debounced timer then re-fetches at a finer/coarser resolution once
+            // the size settles (only if the desired bucket count actually changed).
             redraw();
+            if (e.WidthChanged)
+            {
+                _resizeDebounce.Stop();
+                _resizeDebounce.Start();
+            }
         }
 
         private void clearBars()

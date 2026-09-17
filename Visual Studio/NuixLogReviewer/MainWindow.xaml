@@ -249,6 +249,51 @@
                     </ListView>
                 </Grid>
             </TabItem>
+            <TabItem Header="Files">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="4,3,4,3" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Content="Show all" Name="btnShowAllFiles" Click="btnShowAllFiles_Click"
+                                    Margin="6,0,0,0" Padding="8,2" MinHeight="0"
+                                    ToolTip="Show every source file's entries in the current view."/>
+                            <Button Content="Hide all" Name="btnHideAllFiles" Click="btnHideAllFiles_Click"
+                                    Margin="6,0,0,0" Padding="8,2" MinHeight="0"
+                                    ToolTip="Hide every listed source file's entries from the current view."/>
+                        </StackPanel>
+                        <TextBlock VerticalAlignment="Center" TextWrapping="Wrap" Foreground="{StaticResource Brush.TextMuted}"
+                                   Text="Source files found in the load, with entry counts for the current view. Toggle the eye to hide a file; double-click a row to drill down. Hover a name for its full path."/>
+                    </DockPanel>
+                    <ListView x:Name="fileList" Grid.Row="1" MouseDoubleClick="fileList_MouseDoubleClick"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="" Width="34">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="{Binding EyeGlyph}" ToolTip="{Binding EyeToolTip}"
+                                                    Click="fileEyeToggle_Click" Tag="{Binding}"
+                                                    Style="{StaticResource EyeToggleButton}"/>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="File" Width="360">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DisplayName}" ToolTip="{Binding Path}"/>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="Count" DisplayMemberBinding="{Binding Count, StringFormat='{}{0:N0}'}" Width="80"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </Grid>
+            </TabItem>
             <TabItem Header="Patterns" x:Name="tabPatterns">
                 <Grid>
                     <Grid.RowDefinitions>
