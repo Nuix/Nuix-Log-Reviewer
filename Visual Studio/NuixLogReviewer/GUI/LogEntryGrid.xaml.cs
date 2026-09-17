@@ -87,6 +87,17 @@ namespace NuixLogReviewer.GUI
                 // gives a stable, roughly-centered view of the pivot row within the loaded context.
                 CenterRow(index, entries.Count);
                 ReportVisibleRange();
+
+                // Bring keyboard focus onto the selected row's container so the selection reads as the
+                // active (not just logical) selection and arrow-key navigation continues from here.
+                // Deferred again so the container exists after the centering scroll realizes it.
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (resultsGrid.ItemContainerGenerator.ContainerFromItem(entry) is DataGridRow row)
+                    {
+                        row.Focus();
+                    }
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
             }), System.Windows.Threading.DispatcherPriority.Loaded);
         }
 

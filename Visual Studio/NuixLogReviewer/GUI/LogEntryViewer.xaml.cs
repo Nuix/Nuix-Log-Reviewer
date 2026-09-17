@@ -38,8 +38,30 @@ namespace NuixLogReviewer.GUI
             txtChannel.Text = "";
             txtContent.Text = "";
             txtFilePath.Text = "";
-            flagList.ItemsSource = new String[] { };
+            flagList.ItemsSource = new object[] { };
 
+        }
+
+        /// <summary>Item shown in the Assigned Flags list: the flag name plus its description tooltip.</summary>
+        private sealed class FlagView
+        {
+            public string Name { get; set; }
+            public string Description { get; set; }
+        }
+
+        /// <summary>
+        /// Projects an entry's raw flag strings into display items, attaching each flag's description
+        /// (from the classifier description registry) as a tooltip. Flags without a declared description
+        /// simply have no tooltip.
+        /// </summary>
+        private static IEnumerable<FlagView> ToFlagViews(IEnumerable<string> flags)
+        {
+            if (flags == null) { return new FlagView[] { }; }
+            return flags.Select(f => new FlagView
+            {
+                Name = f,
+                Description = LogRepository.Classifiers.ClassifierDescriptionRegistry.DescriptionFor(f),
+            }).ToList();
         }
 
         public void SetLogEntry(NuixLogEntry entry)
@@ -58,7 +80,7 @@ namespace NuixLogReviewer.GUI
                 txtChannel.Text = entry.Channel;
                 txtContent.Text = entry.Content;
                 txtFilePath.Text = entry.FilePath;
-                flagList.ItemsSource = entry.Flags;
+                flagList.ItemsSource = ToFlagViews(entry.Flags);
             }
         }
 

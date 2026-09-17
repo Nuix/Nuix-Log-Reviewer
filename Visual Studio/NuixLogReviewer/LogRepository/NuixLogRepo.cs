@@ -63,18 +63,22 @@ namespace NuixLogReviewer.LogRepository
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_TimeStamp;");
             Database.ExecuteNonQuery("DROP INDEX IF EXISTS IDX_LineNumber;");
 
-            long overallRecordCount = 0;
+            // Skip empty files up front, preserving the caller's order. That order defines the id
+            // assignment order below (file-order, then in-line order), identical to the previous
+            // one-file-at-a-time loader.
+            string[] files = logFiles
+                .Where(f => { var fi = new FileInfo(f); return fi.Exists && fi.Length > 0; })
+                .ToArray();
 
-            // Open things up for writing to the index
             SearchIndex.BeginWrite();
-
-            foreach (var logFile in logFiles)
+            try
             {
-                overallRecordCount = LoadLogFile(logFile, overallRecordCount, pb);
+                LoadFilesPipeline(files, pb);
             }
-
-            // Tell search index to close
-            SearchIndex.EndWrite();
+            finally
+            {
+                SearchIndex.EndWrite();
+            }
 
             // SQLite is faster building whole index at once rather than on each insert, so earlier
             // we dropped the LogEntry indexes and now we rebuild them.
@@ -85,99 +89,119 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
-        /// This should only be called by public method LoadlogFiles since it takes care of index drop and rebuild.
+        /// Single load-wide producer/consumer pipeline shared across ALL files:
+        /// <list type="bullet">
+        /// <item>A bounded pool of reader+classifier workers reads and classifies files concurrently,
+        /// each writing its entries (in line order) into that file's own ordered queue.</item>
+        /// <item>An ordering coordinator drains those per-file queues strictly in file order into a
+        /// single shared insert queue, so the id assignment order is identical to the old sequential
+        /// loader (file 0's entries, then file 1's, ...).</item>
+        /// <item>One shared DB consumer assigns ids and inserts (single SQLite writer), then hands
+        /// entries to a shared Lucene indexer pool.</item>
+        /// </list>
+        /// This overlaps the CPU-heavy read/classify/index of later files with the DB insertion of
+        /// earlier ones, while preserving every ordering and single-writer invariant of the original.
         /// </summary>
-        /// <param name="logFile">Path to a log file to load.</param>
-        /// <param name="pb">ProgressBroadcaster which will received progress updates, can be null.</param>
-        private long LoadLogFile(string logFile, long startingRecordCount, ProgressBroadcaster pb = null)
+        private void LoadFilesPipeline(string[] files, ProgressBroadcaster pb)
         {
-            FileInfo logFileInfo = new FileInfo(logFile);
-            if (logFileInfo.Length < 1)
-            {
-                // Skip 0 length files
-                return startingRecordCount;
-            }
+            if (files.Length == 0) { return; }
 
             int indexingConcurrency = 8;
+            // Read+classify is CPU-bound (many classifiers per entry); cap workers to cores but never
+            // more than the number of files, and at least 1.
+            int readConcurrency = Math.Max(1, Math.Min(files.Length, Environment.ProcessorCount));
 
-            pb.BroadcastStatus("Loading from " + logFile);
-
-            // Can be tricky to do batch insert and get each new record's ID, so instead we query database for current
-            // highest ID value and increment and assign IDs here rather than letting DB auto increment do the job.
+            // Ids are assigned on the single DB thread; seed once from the current high-water mark.
             long nextId = Database.GetHighestLogEntryID();
-
-            NuixLogReader reader = new NuixLogReader(logFile);
 
             SQLiteBatchInserter batchInserter = Database.CreateBatchInserter(5000);
             batchInserter.Begin(Database.GetEmbeddedSQL("NuixLogReviewer.LogRepository.InsertLogEntry.sqlite"));
 
-            // Used for progress updates
-            object locker = new object();
-            long recordCount = startingRecordCount;
+            long recordCount = 0;
 
-            List<IEntryClassifier> classifiers = getAllClassifiers();
-
-            BlockingCollection<NuixLogEntry> toInsert = new BlockingCollection<NuixLogEntry>();
-            BlockingCollection<NuixLogEntry> toClassify = new BlockingCollection<NuixLogEntry>();
-            BlockingCollection<NuixLogEntry> toIndex = new BlockingCollection<NuixLogEntry>();
-
-            // ==== Task Dedicated to Pulling Entries from Source ====
-            Task readerConsumer = new Task(new Action(() =>
+            // One ordered queue per file. Bounded so a very large file can't balloon memory while the
+            // coordinator is still draining an earlier file. Each queue ends with a null sentinel.
+            var perFileQueues = new BlockingCollection<NuixLogEntry>[files.Length];
+            for (int i = 0; i < files.Length; i++)
             {
-                foreach (var entry in reader)
-                {
-                    toClassify.Add(entry);
-                }
+                perFileQueues[i] = new BlockingCollection<NuixLogEntry>(boundedCapacity: 20000);
+            }
 
-                // Signal that was the last one
-                toClassify.Add(null);
+            var toInsert = new BlockingCollection<NuixLogEntry>(boundedCapacity: 50000);
+            var toIndex = new BlockingCollection<NuixLogEntry>(boundedCapacity: 50000);
 
-            }), TaskCreationOptions.LongRunning);
-
-            // ==== Classify Log Entries ====
-            Task classificationTask = new Task(new Action(() =>
+            // ==== Reader+classifier worker pool ====
+            // Workers claim the next unread file index atomically and process it end to end into that
+            // file's queue. Each worker owns its own classifier instances (the classifiers are
+            // stateless per-entry, but per-worker instances keep us safe from any future state).
+            int nextFileIndex = -1;
+            Task[] readers = new Task[readConcurrency];
+            for (int w = 0; w < readConcurrency; w++)
             {
-                while (true)
+                readers[w] = Task.Factory.StartNew(() =>
                 {
-                    NuixLogEntry entry = toClassify.Take();
-                    if (entry == null) { break; }
-
-                    // Give each classifier a chance to look at this entry and provide flag
-                    // values to be assigned to the entry.
-                    HashSet<string> flags = new HashSet<string>();
-                    foreach (var classifier in classifiers)
+                    List<IEntryClassifier> classifiers = getAllClassifiers();
+                    while (true)
                     {
-                        var calculatedFlags = classifier.Classify(entry);
-                        if (calculatedFlags != null)
+                        int fileIndex = System.Threading.Interlocked.Increment(ref nextFileIndex);
+                        if (fileIndex >= files.Length) { break; }
+
+                        var queue = perFileQueues[fileIndex];
+                        try
                         {
-                            foreach (var calculatedFlag in calculatedFlags)
+                            var reader = new NuixLogReader(files[fileIndex]);
+                            foreach (var entry in reader)
                             {
-                                flags.Add(calculatedFlag.ToLower());
+                                HashSet<string> flags = new HashSet<string>();
+                                foreach (var classifier in classifiers)
+                                {
+                                    var calculatedFlags = classifier.Classify(entry);
+                                    if (calculatedFlags != null)
+                                    {
+                                        foreach (var calculatedFlag in calculatedFlags)
+                                        {
+                                            flags.Add(calculatedFlag.ToLower());
+                                        }
+                                    }
+                                }
+                                entry.Flags = flags;
+                                queue.Add(entry);
                             }
                         }
+                        finally
+                        {
+                            // Always close the queue so the coordinator never blocks forever on a file
+                            // that failed to read.
+                            queue.CompleteAdding();
+                        }
                     }
-                    entry.Flags = flags;
+                }, TaskCreationOptions.LongRunning);
+            }
 
-                    toInsert.Add(entry);
+            // ==== Ordering coordinator: drain per-file queues in file order into the shared insert queue ====
+            Task coordinator = Task.Factory.StartNew(() =>
+            {
+                for (int i = 0; i < files.Length; i++)
+                {
+                    pb.BroadcastStatus("Loading from " + files[i]);
+                    foreach (var entry in perFileQueues[i].GetConsumingEnumerable())
+                    {
+                        toInsert.Add(entry);
+                    }
+                    perFileQueues[i].Dispose();
                 }
+                toInsert.CompleteAdding();
+            }, TaskCreationOptions.LongRunning);
 
-                // Signal that was the last one
-                toInsert.Add(null);
-            }), TaskCreationOptions.LongRunning);
-
-            // ==== Task Dedicated to Inserting to SQLite Database ====
-            Task dbConsumer = new Task(new Action(() =>
+            // ==== Single DB consumer: assign ids + insert (one SQLite writer), then fan out to index ====
+            Task dbConsumer = Task.Factory.StartNew(() =>
             {
                 DateTime lastProgress = DateTime.Now;
 
-                while (true)
+                foreach (var entry in toInsert.GetConsumingEnumerable())
                 {
-                    NuixLogEntry entry = toInsert.Take();
-                    if (entry == null) { break; }
-
                     nextId++;
 
-                    // Push to SQLite database
                     entry.ID = nextId;
                     batchInserter["@id"] = entry.ID;
                     batchInserter["@linenumber"] = entry.LineNumber;
@@ -193,69 +217,48 @@ namespace NuixLogReviewer.LogRepository
 
                     recordCount++;
 
-                    // Periodically report progress
                     if ((DateTime.Now - lastProgress).TotalMilliseconds >= 500)
                     {
-                        lock (this) { pb.BroadcastProgress(recordCount); }
+                        pb.BroadcastProgress(recordCount);
                         lastProgress = DateTime.Now;
                     }
 
                     toIndex.Add(entry);
                 }
 
-                // Let each indexing task know there are no more to index
-                for (int i = 0; i < indexingConcurrency; i++)
-                {
-                    toIndex.Add(null);
-                }
-            }), TaskCreationOptions.LongRunning);
+                toIndex.CompleteAdding();
+            }, TaskCreationOptions.LongRunning);
 
-            // ==== Series of Tasks Dedicated to Adding Entries to Lucene Index ====
+            // ==== Shared Lucene indexer pool ====
             // All Lucene Document construction lives in LogSearchIndex.IndexLogEntry(entry) so the
             // write-time field configuration stays in one place and can't drift from the query-time
-            // analyzer configuration. IndexWriter.AddDocument is thread-safe, so we can fan this out.
+            // analyzer configuration. IndexWriter.AddDocument is thread-safe, so we fan this out.
             Task[] indexers = new Task[indexingConcurrency];
             for (int i = 0; i < indexingConcurrency; i++)
             {
-                Task indexConsumer = new Task(new Action(() =>
+                indexers[i] = Task.Factory.StartNew(() =>
                 {
-                    while (true)
+                    foreach (var entry in toIndex.GetConsumingEnumerable())
                     {
-                        NuixLogEntry entry = toIndex.Take();
-                        if (entry == null) { break; }
-
                         SearchIndex.IndexLogEntry(entry);
                     }
-
-                    pb.BroadcastProgress(recordCount);
-                }), TaskCreationOptions.LongRunning);
-                indexers[i] = indexConsumer;
-                indexConsumer.Start();
+                }, TaskCreationOptions.LongRunning);
             }
 
-            readerConsumer.Start();
-            classificationTask.Start();
-            dbConsumer.Start();
-
-            // Wait for them all to finish up
-            Task.WaitAll(readerConsumer, classificationTask, dbConsumer);
-
+            // Wait for the whole pipeline to drain, in dependency order.
+            Task.WaitAll(readers);
+            Task.WaitAll(coordinator, dbConsumer);
             pb.BroadcastStatus("Waiting for indexing to complete...");
             Task.WaitAll(indexers);
 
-            // Report final progress
             pb.BroadcastProgress(recordCount);
 
-            // Make sure batch inserter flushes any pending inserts
+            // Flush any pending inserts and release the (single) batch inserter.
             batchInserter.Complete();
-
             Database.ReleaseBatchInserter(batchInserter);
 
-            toClassify.Dispose();
             toInsert.Dispose();
             toIndex.Dispose();
-
-            return recordCount;
         }
 
         /// <summary>
@@ -286,6 +289,35 @@ namespace NuixLogReviewer.LogRepository
         public IList<LogSearchIndex.LogPattern> GetPatterns(string query)
         {
             return SearchIndex.MinePatterns(query);
+        }
+
+        /// <summary>
+        /// Groups the given query's matched set into worker jobs (the Jobs view), each with its
+        /// observed lifespan (first/last event), entry/warn/error counts and the contributing entry
+        /// ids for drill-down. Consistent with the other views, this reflects the current filtered set.
+        /// </summary>
+        public IList<LogSearchIndex.JobInfo> GetJobs(string query)
+        {
+            return SearchIndex.MineJobs(query);
+        }
+
+        /// <summary>
+        /// Within the given query's matched set, returns the id of the newest entry at or before the
+        /// given event time (ticks), or null if none. Used by the timeline click-to-scroll feature.
+        /// </summary>
+        public long? FindEntryIdAtOrBefore(string query, long ticks)
+        {
+            return SearchIndex.FindEntryIdAtOrBefore(query, ticks);
+        }
+
+        /// <summary>
+        /// Single-pass summary (total, per-level and per-flag counts, time span) for a query's matched
+        /// set. Used to compute classifier counts on the unfiltered-by-visibility set and the
+        /// "N rows excluded by classifiers" figure, independent of the effective (hidden-filtered) query.
+        /// </summary>
+        public LogSearchIndex.FilteredSetSummary Summarize(string query)
+        {
+            return SearchIndex.SummarizeFilteredSet(query);
         }
 
         /// <summary>
@@ -394,17 +426,29 @@ namespace NuixLogReviewer.LogRepository
             }
         }
 
-        // Use reflection to get an instance of all defined classifiers (classes that implement IEntryClassifier)
+        // Use reflection to get an instance of all defined compiled classifiers (classes that implement
+        // IEntryClassifier and have a parameterless constructor), then append the scripted classifiers
+        // loaded from the ClassifierScripts directory. Called once per load worker, so each worker gets
+        // its own instances - including a private Jint engine per scripted classifier (engines are
+        // single-threaded).
         private List<IEntryClassifier> getAllClassifiers()
         {
             var iEntryClassifierType = typeof(IEntryClassifier);
             var classifierTypes = Assembly.GetExecutingAssembly().GetExportedTypes()
-                .Where(t => !t.IsInterface && iEntryClassifierType.IsAssignableFrom(t));
+                .Where(t => !t.IsInterface && !t.IsAbstract && iEntryClassifierType.IsAssignableFrom(t))
+                // The scripted classifier is constructed from a prepared script definition, not by
+                // reflection; skip it (and anything else lacking a public parameterless constructor).
+                .Where(t => t.GetConstructor(Type.EmptyTypes) != null);
+
             List<IEntryClassifier> result = new List<IEntryClassifier>();
             foreach (var classifierType in classifierTypes)
             {
                 result.Add((IEntryClassifier)Activator.CreateInstance(classifierType));
             }
+
+            // Scripted classifiers (sandboxed JS from ClassifierScripts/*.js), one fresh engine each.
+            result.AddRange(Classifiers.Scripting.ScriptClassifierLoader.CreateClassifiersForWorker());
+
             return result;
         }
     }

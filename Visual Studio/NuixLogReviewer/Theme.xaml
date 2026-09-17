@@ -1,0 +1,389 @@
+<!--
+  Nuix Log Reviewer theme.
+
+  Centralizes the app's visual language so controls stay consistent and on-brand:
+    - Brand accent is Nuix "True Blue" (#0056E3) with a small tint/shade scale.
+    - Neutral grays for window/panel surfaces and borders.
+    - Semantic status colors (INFO green / WARN amber / ERROR red / DEBUG cyan) are
+      kept SEPARATE from the brand and are only used for status readouts and the
+      chart, never for chrome (per the brand guidance).
+    - Spacing is intentionally tight (small paddings / control height) to preserve the
+      dense, information-first layout this tool relies on.
+
+  Merged in App.xaml so the implicit styles below apply app-wide without per-control markup.
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- ============================ Brand palette ============================ -->
+    <Color x:Key="Color.Brand">#0056E3</Color>          <!-- True Blue -->
+    <Color x:Key="Color.BrandDark">#00379B</Color>      <!-- pressed / active -->
+    <Color x:Key="Color.BrandHover">#1F6BEA</Color>     <!-- hover -->
+    <Color x:Key="Color.BrandTint">#8BB4FF</Color>      <!-- light tint -->
+    <Color x:Key="Color.BrandFaint">#EAF1FE</Color>     <!-- very light wash / selection -->
+
+    <SolidColorBrush x:Key="Brush.Brand" Color="{StaticResource Color.Brand}"/>
+    <SolidColorBrush x:Key="Brush.BrandDark" Color="{StaticResource Color.BrandDark}"/>
+    <SolidColorBrush x:Key="Brush.BrandHover" Color="{StaticResource Color.BrandHover}"/>
+    <SolidColorBrush x:Key="Brush.BrandTint" Color="{StaticResource Color.BrandTint}"/>
+    <SolidColorBrush x:Key="Brush.BrandFaint" Color="{StaticResource Color.BrandFaint}"/>
+
+    <!-- ============================ Neutrals ============================ -->
+    <SolidColorBrush x:Key="Brush.WindowBackground" Color="#F4F5F7"/>
+    <SolidColorBrush x:Key="Brush.Surface" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Brush.SurfaceAlt" Color="#EEF0F3"/>
+    <SolidColorBrush x:Key="Brush.Border" Color="#D4D7DD"/>
+    <SolidColorBrush x:Key="Brush.BorderStrong" Color="#B4B9C2"/>
+    <SolidColorBrush x:Key="Brush.Text" Color="#1B1D21"/>
+    <SolidColorBrush x:Key="Brush.TextMuted" Color="#6A6F79"/>
+    <SolidColorBrush x:Key="Brush.TextOnBrand" Color="#FFFFFF"/>
+
+    <!-- ============================ Semantic (status only) ============================ -->
+    <Color x:Key="Color.Info">#1F9D57</Color>
+    <Color x:Key="Color.Warn">#C98A00</Color>
+    <Color x:Key="Color.Error">#D23A34</Color>
+    <Color x:Key="Color.Debug">#1391A8</Color>
+    <SolidColorBrush x:Key="Brush.Info" Color="{StaticResource Color.Info}"/>
+    <SolidColorBrush x:Key="Brush.Warn" Color="{StaticResource Color.Warn}"/>
+    <SolidColorBrush x:Key="Brush.Error" Color="{StaticResource Color.Error}"/>
+    <SolidColorBrush x:Key="Brush.Debug" Color="{StaticResource Color.Debug}"/>
+    <!-- Faint fills for the status chips -->
+    <SolidColorBrush x:Key="Brush.Info.Fill" Color="#E7F5EE"/>
+    <SolidColorBrush x:Key="Brush.Warn.Fill" Color="#FBF2DC"/>
+    <SolidColorBrush x:Key="Brush.Error.Fill" Color="#FBE7E6"/>
+    <SolidColorBrush x:Key="Brush.Debug.Fill" Color="#E3F3F6"/>
+
+    <!-- ============================ Tokens (tight spacing) ============================ -->
+    <sys:Double x:Key="Size.FontBase">12</sys:Double>
+    <sys:Double x:Key="Size.ControlHeight">24</sys:Double>
+    <CornerRadius x:Key="Radius.Control">4</CornerRadius>
+    <CornerRadius x:Key="Radius.Chip">9</CornerRadius>
+    <Thickness x:Key="Pad.Control">7,2,7,2</Thickness>
+    <Thickness x:Key="Pad.Tight">4,1,4,1</Thickness>
+    <FontFamily x:Key="Font.Mono">Consolas</FontFamily>
+
+    <!-- ============================ Button ============================ -->
+    <Style TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource Brush.Brand}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.TextOnBrand}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="{StaticResource Pad.Control}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <Setter Property="MinHeight" Value="{StaticResource Size.ControlHeight}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource Radius.Control}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandDark}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.SurfaceAlt}"/>
+                            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Icon button: subtle neutral surface, brand tint on hover. For the search/clear icon buttons. -->
+    <Style x:Key="IconButton" TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="Padding" Value="4"/>
+        <Setter Property="MinHeight" Value="{StaticResource Size.ControlHeight}"/>
+        <Setter Property="MinWidth" Value="{StaticResource Size.ControlHeight}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Radius.Control}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandFaint}"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.BrandTint}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandTint}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Eye toggle: borderless button hosting a Segoe MDL2 glyph for the Classifiers table
+         show/hide control. Uses an explicit foreground so the glyph is visible at rest (not only
+         on hover); a subtle brand tint on hover/press gives click feedback. -->
+    <Style x:Key="EyeToggleButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="MinHeight" Value="0"/>
+        <Setter Property="MinWidth" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Brand}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}" SnapsToDevicePixels="True"
+                            CornerRadius="{StaticResource Radius.Control}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandFaint}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandTint}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!-- Color-code the state: brand blue = shown (active), muted gray = hidden (dimmed/off).
+                 The button's DataContext is the FlagCount row, so we can bind IsShown directly. -->
+            <DataTrigger Binding="{Binding IsShown}" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Status chip: a rounded, tinted count button for the status bar (INFO/WARN/ERROR/DEBUG).
+         The semantic color is applied per-instance via Tag on the hosting control; here we provide
+         the shared shape. Foreground/borders are set on each button in the view. -->
+    <Style x:Key="StatusChip" TargetType="Button">
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="{StaticResource Pad.Tight}"/>
+        <Setter Property="MinWidth" Value="34"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Radius.Chip}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.BrandDark}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.SurfaceAlt}"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+                            <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================ TextBox ============================ -->
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="{StaticResource Pad.Tight}"/>
+        <Setter Property="MinHeight" Value="{StaticResource Size.ControlHeight}"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <!-- Default: no scrollbars (single-line fields). Multi-line boxes like the details content
+             view opt back in by setting these locally to Visible/Auto. -->
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Hidden"/>
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Radius.Control}" SnapsToDevicePixels="True">
+                        <!-- Host fills the border (VerticalAlignment=Stretch); where the text sits within
+                             it follows the control's VerticalContentAlignment. This lets single-line
+                             fields center while multi-line boxes (e.g. the details content view) fill
+                             the whole container instead of shrink-wrapping to their content.
+                             Scrollbar visibility is bound to the TextBox's own settings (default Hidden),
+                             so single-line fields show no bars while boxes that opt in (txtContent) do. -->
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                      VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      HorizontalScrollBarVisibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=(ScrollViewer.HorizontalScrollBarVisibility)}"
+                                      VerticalScrollBarVisibility="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=(ScrollViewer.VerticalScrollBarVisibility)}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.BorderStrong}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.Brand}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================ Labels / text ============================ -->
+    <Style TargetType="Label">
+        <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <Setter Property="Padding" Value="2,0,2,0"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <!-- ============================ TabControl / TabItem ============================ -->
+    <Style TargetType="TabControl">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+    <Style TargetType="TabItem">
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.TextMuted}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Border x:Name="bd" Background="Transparent" Padding="10,3,10,3" Margin="0,0,1,0"
+                            BorderThickness="0,0,0,2" BorderBrush="Transparent" SnapsToDevicePixels="True">
+                        <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandFaint}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.Brand}"/>
+                            <Setter Property="Foreground" Value="{StaticResource Brush.Brand}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================ Menu ============================ -->
+    <Style TargetType="Menu">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+    </Style>
+
+    <!-- ============================ StatusBar ============================ -->
+    <Style TargetType="StatusBar">
+        <Setter Property="Background" Value="{StaticResource Brush.SurfaceAlt}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+    </Style>
+
+    <!-- ============================ GridView column headers ============================ -->
+    <Style TargetType="GridViewColumnHeader">
+        <Setter Property="Background" Value="{StaticResource Brush.SurfaceAlt}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Padding" Value="6,3,6,3"/>
+    </Style>
+
+    <!-- ============================ ListView / DataGrid selection accent ============================ -->
+    <Style TargetType="ListView">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.FontBase}"/>
+    </Style>
+
+    <!-- ============================ GridSplitter ============================ -->
+    <!--
+      A visible drag handle. Default WPF GridSplitters are transparent and users can't tell they
+      exist. This gives a subtle surface bar with a centered "grip" of dots, brand-tinted on hover,
+      so it reads as an interactive divider. Works for both horizontal (row) and vertical (column)
+      splitters via the shared look; the grip is drawn with a small dotted panel.
+    -->
+    <Style TargetType="GridSplitter">
+        <Setter Property="Background" Value="{StaticResource Brush.SurfaceAlt}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="0,1,0,1"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="GridSplitter">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <!-- Centered grip: three small dots indicating the bar is draggable. -->
+                        <Viewbox Stretch="Uniform" StretchDirection="DownOnly">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Ellipse Width="3" Height="3" Margin="1,0" Fill="{StaticResource Brush.BorderStrong}"/>
+                                <Ellipse Width="3" Height="3" Margin="1,0" Fill="{StaticResource Brush.BorderStrong}"/>
+                                <Ellipse Width="3" Height="3" Margin="1,0" Fill="{StaticResource Brush.BorderStrong}"/>
+                                <Ellipse Width="3" Height="3" Margin="1,0" Fill="{StaticResource Brush.BorderStrong}"/>
+                                <Ellipse Width="3" Height="3" Margin="1,0" Fill="{StaticResource Brush.BorderStrong}"/>
+                            </StackPanel>
+                        </Viewbox>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.BrandFaint}"/>
+                            <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.BrandTint}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================ ToolTip ============================ -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{StaticResource Brush.Text}"/>
+        <Setter Property="Foreground" Value="#FFFFFF"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Padding" Value="6,3,6,3"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolTip">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="{StaticResource Radius.Control}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

@@ -48,7 +48,13 @@
             <TextBox x:Name="txtChannel" IsReadOnly="True" Grid.Row="5" Grid.Column="1" FontFamily="Consolas" VerticalContentAlignment="Center"/>
 
             <Label Content="Assigned Flags" Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" HorizontalContentAlignment="Left"/>
-            <ListView x:Name="flagList" Grid.Row="7" Grid.ColumnSpan="2"/>
+            <ListView x:Name="flagList" Grid.Row="7" Grid.ColumnSpan="2">
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Name}" ToolTip="{Binding Description}"/>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
         </Grid>
 
         <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Right" ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"/>
@@ -66,7 +72,9 @@
             <StackPanel Grid.Row="2" Orientation="Horizontal">
                 <CheckBox x:Name="checkWrapText" Content="Wrap Text" IsChecked="True"/>
             </StackPanel>
-            <TextBox Grid.Row="1" x:Name="txtContent" FontFamily="Consolas" IsReadOnly="true" VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Visible" TextWrapping="Wrap"/>
+            <TextBox Grid.Row="1" x:Name="txtContent" FontFamily="{StaticResource Font.Mono}" IsReadOnly="true"
+                     VerticalContentAlignment="Top" AcceptsReturn="True"
+                     VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Visible" TextWrapping="Wrap"/>
         </Grid>
         
     </Grid>

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -22,6 +23,24 @@ namespace NuixLogReviewer.GUI
 
         private LogSearchIndex.TimeSeries _series;
 
+        // Job lifespan overlay (brackets above the bars). Kept separate from the bars so they can be
+        // toggled/updated independently, and re-laid-out on resize.
+        private System.Collections.Generic.IList<LogSearchIndex.JobInfo> _jobSpans;
+        private readonly System.Collections.Generic.List<UIElement> _jobElements = new System.Collections.Generic.List<UIElement>();
+        // Job id currently selected in the Jobs grid, emphasized on the chart. Null = none.
+        private string _selectedJobId;
+
+        // Overlay geometry: a small lane band pinned to the TOP of the strip so the stacked bars below
+        // stay readable. Each concurrent job gets its own lane; lanes are capped and overflow is noted.
+        // Concurrency is typically low, so lanes are drawn fairly tall for easy hovering/reading.
+        private const double JobLaneHeight = 7.0;   // thickness of each job bar
+        private const double JobLaneGap = 2.0;      // vertical gap between lanes
+        private const int JobMaxLanes = 3;          // cap so a big worker fan-out doesn't eat the strip
+        private static readonly Brush JobBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x3D, 0x7C, 0xFF));       // True Blue tint (unselected)
+        private static readonly Brush JobSelectedBrush = new SolidColorBrush(Color.FromArgb(0xFF, 0x00, 0x56, 0xE3)); // full True Blue (selected)
+        private static readonly Brush JobSelectedStroke = new SolidColorBrush(Color.FromArgb(0xFF, 0x00, 0x37, 0x9B));
+        private static readonly Brush JobOverflowBrush = new SolidColorBrush(Color.FromArgb(0x99, 0x00, 0x37, 0x9B));
+
         private bool _dragging;
         private double _dragStartX;
 
@@ -33,11 +52,21 @@ namespace NuixLogReviewer.GUI
         /// <summary>Raised when the user finishes dragging out a time region on the chart.</summary>
         public event Action<long, long> TimeRangeSelected;
 
+        /// <summary>
+        /// Raised on a single click (as opposed to a drag) with the clicked event-time (ticks). The
+        /// host uses it to scroll the grid to the nearest log event at or before that time.
+        /// </summary>
+        public event Action<long> TimeClicked;
+
         static LevelTimeChart()
         {
             InfoBrush.Freeze();
             WarnBrush.Freeze();
             ErrorBrush.Freeze();
+            JobBrush.Freeze();
+            JobSelectedBrush.Freeze();
+            JobSelectedStroke.Freeze();
+            JobOverflowBrush.Freeze();
         }
 
         public LevelTimeChart()
@@ -64,6 +93,12 @@ namespace NuixLogReviewer.GUI
             _markerTicks = null;
             _visibleStartTicks = null;
             _visibleEndTicks = null;
+            // A new result set invalidates any previously-overlaid job spans (they were computed for
+            // the old set). The user recomputes Jobs for the new set; keeps the overlay consistent
+            // with the filtered set like the rest of the app.
+            _jobSpans = null;
+            _selectedJobId = null;
+            clearJobElements();
             selectionRect.Visibility = Visibility.Collapsed;
             hoverLine.Visibility = Visibility.Collapsed;
             readout.Visibility = Visibility.Collapsed;
@@ -155,6 +190,7 @@ namespace NuixLogReviewer.GUI
             }
 
             applyOverlays();
+            drawJobSpans();
         }
 
         private double addSegment(double x, double bottomY, double width, double segHeight, Brush fill)
@@ -267,11 +303,13 @@ namespace NuixLogReviewer.GUI
             double left = Math.Min(_dragStartX, x);
             double right = Math.Max(_dragStartX, x);
 
-            // Ignore tiny drags (treat as a click, not a selection).
+            // Tiny movement => treat as a click (not a range selection): report the clicked time so
+            // the host can scroll the grid to the nearest log event at or before that time.
             if (right - left < 3)
             {
                 selectionRect.Visibility = Visibility.Collapsed;
                 readout.Visibility = Visibility.Collapsed;
+                TimeClicked?.Invoke(xToTicks(x));
                 return;
             }
 
@@ -394,6 +432,130 @@ namespace NuixLogReviewer.GUI
             else
             {
                 visibleBand.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        // ---- Job lifespan overlay ----
+
+        /// <summary>
+        /// Overlays the given worker job lifespans as brackets in a small lane band at the top of the
+        /// strip. Pass null/empty to clear. Concurrent (time-overlapping) jobs are placed on separate
+        /// lanes so parallelism is visible; lanes are capped (JobMaxLanes) and any jobs that don't fit
+        /// are drawn merged into a final "overflow" lane so the strip height stays bounded.
+        /// </summary>
+        public void SetJobSpans(System.Collections.Generic.IList<LogSearchIndex.JobInfo> jobs)
+        {
+            _jobSpans = jobs;
+            drawJobSpans();
+        }
+
+        /// <summary>
+        /// Emphasizes the bracket for the given job id (full brand color + outline, drawn on top) so it
+        /// visually corresponds to the row selected in the Jobs grid. Pass null to clear the emphasis.
+        /// </summary>
+        public void SetSelectedJob(string jobId)
+        {
+            if (string.Equals(_selectedJobId, jobId, StringComparison.Ordinal)) return;
+            _selectedJobId = jobId;
+            drawJobSpans();
+        }
+
+        private void clearJobElements()
+        {
+            foreach (var el in _jobElements)
+            {
+                chartCanvas.Children.Remove(el);
+            }
+            _jobElements.Clear();
+        }
+
+        /// <summary>
+        /// Draws the job-span brackets. Greedy lane packing: jobs are taken in start-time order and
+        /// placed on the first lane whose last span ends before this job starts; concurrent jobs thus
+        /// stack onto separate lanes. Beyond JobMaxLanes everything collapses to one overflow lane.
+        /// Spans are clamped to the charted time window so partial-overlap jobs still show.
+        /// </summary>
+        private void drawJobSpans()
+        {
+            clearJobElements();
+
+            if (_jobSpans == null || _jobSpans.Count == 0) return;
+            if (_series == null || _series.IsEmpty) return;
+
+            double w = chartCanvas.ActualWidth;
+            if (w <= 0) return;
+
+            long min = _series.MinTicks.Value;
+            long max = _series.MaxTicks.Value;
+            if (max <= min) return;
+
+            // Order by start so greedy lane assignment yields a stable, readable packing.
+            var ordered = _jobSpans.OrderBy(j => j.FirstSeen.Ticks).ToList();
+
+            // laneEndX[i] = right pixel edge of the last job placed on lane i.
+            var laneEndX = new System.Collections.Generic.List<double>();
+            Rectangle selectedBar = null;
+
+            foreach (var job in ordered)
+            {
+                // Clamp span to the charted window.
+                long s = Math.Max(min, Math.Min(job.FirstSeen.Ticks, job.LastSeen.Ticks));
+                long e = Math.Min(max, Math.Max(job.FirstSeen.Ticks, job.LastSeen.Ticks));
+                if (e < min || s > max) continue; // entirely outside the window
+
+                double x1 = (double)(s - min) / (max - min) * w;
+                double x2 = (double)(e - min) / (max - min) * w;
+                double barW = Math.Max(2.0, x2 - x1); // keep very short jobs visible
+
+                // Find the first lane free at x1 (a small gap avoids touching bars looking merged).
+                int lane = -1;
+                for (int i = 0; i < laneEndX.Count; i++)
+                {
+                    if (x1 >= laneEndX[i] + 2.0) { lane = i; break; }
+                }
+                if (lane == -1)
+                {
+                    if (laneEndX.Count < JobMaxLanes) { lane = laneEndX.Count; laneEndX.Add(0); }
+                    else { lane = JobMaxLanes - 1; } // overflow: share the last lane
+                }
+                laneEndX[lane] = x1 + barW;
+
+                bool overflow = (lane == JobMaxLanes - 1) && laneEndX.Count == JobMaxLanes && ordered.Count > JobMaxLanes;
+                double top = 1.0 + lane * (JobLaneHeight + JobLaneGap);
+
+                bool selected = _selectedJobId != null && string.Equals(job.JobId, _selectedJobId, StringComparison.Ordinal);
+
+                var bar = new Rectangle
+                {
+                    Width = barW,
+                    Height = JobLaneHeight,
+                    RadiusX = 2.0,
+                    RadiusY = 2.0,
+                    Fill = selected ? JobSelectedBrush : (overflow ? JobOverflowBrush : JobBrush),
+                    Stroke = selected ? JobSelectedStroke : null,
+                    StrokeThickness = selected ? 1.0 : 0.0,
+                    ToolTip = string.Format("{0}\n{1:yyyy-MM-dd HH:mm:ss} \u2192 {2:yyyy-MM-dd HH:mm:ss}  ({3})\n{4:N0} entries, {5:N0} warns, {6:N0} errors",
+                        job.JobId, job.FirstSeen, job.LastSeen, job.DurationText,
+                        job.EntryCount, job.WarnCount, job.ErrorCount),
+                };
+                Canvas.SetLeft(bar, x1);
+                Canvas.SetTop(bar, top);
+                if (selected)
+                {
+                    // Defer so the selected bar (with its stroke) draws on top of any later neighbors.
+                    selectedBar = bar;
+                }
+                else
+                {
+                    chartCanvas.Children.Add(bar);
+                    _jobElements.Add(bar);
+                }
+            }
+
+            if (selectedBar != null)
+            {
+                chartCanvas.Children.Add(selectedBar);
+                _jobElements.Add(selectedBar);
             }
         }
     }

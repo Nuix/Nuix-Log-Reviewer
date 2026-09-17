@@ -96,8 +96,7 @@ namespace NuixLogReviewer.LogRepository
         {
             try
             {
-                string appDir = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location ?? "");
-                string configPath = string.IsNullOrEmpty(appDir) ? null : Path.Combine(appDir, "LogPatterns.config");
+                string configPath = ConfigPaths.LogPatternsConfig;
                 if (configPath != null && File.Exists(configPath))
                 {
                     LoadConfig(configPath, out var loadedRules, out var loadedPrefixes);

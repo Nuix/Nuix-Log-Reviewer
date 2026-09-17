@@ -17,14 +17,17 @@ namespace NuixLogReviewer
     /// </summary>
     public class SavedSearchesRepo
     {
-        private static string appDir = null;
         private static string savedSearchDir = null;
         private static Regex invalidNameChars = new Regex(@"[^a-zA-Z0-9 _\-\(\)]+", RegexOptions.Compiled);
 
         static SavedSearchesRepo()
         {
-            appDir = System.IO.Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
-            savedSearchDir = Path.Combine(appDir, "SavedSearches");
+            savedSearchDir = ConfigPaths.SavedSearchesDir;
+            try
+            {
+                if (!Directory.Exists(savedSearchDir)) { Directory.CreateDirectory(savedSearchDir); }
+            }
+            catch { /* non-fatal: read/list tolerate a missing dir; save surfaces its own error */ }
         }
 
         /// <summary>

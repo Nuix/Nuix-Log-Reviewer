@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
-    public class ScriptOutputClassifier : IEntryClassifier
+    public class ScriptOutputClassifier : IEntryClassifier, IClassifierDescriptions
     {
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
@@ -19,6 +19,15 @@ namespace NuixLogReviewer.LogRepository.Classifiers
             {
                 return null;
             }
+        }
+
+        public IEnumerable<ClassifierFlagDescription> GetFlagDescriptions()
+        {
+            return new[]
+            {
+                new ClassifierFlagDescription("script",
+                    "Output emitted by a user script (the entry's source begins with SCRIPT)."),
+            };
         }
     }
 }

@@ -58,6 +58,7 @@ namespace NuixLogReviewer
             repo = new NuixLogRepo();
 
             levelChart.TimeRangeSelected += levelChart_TimeRangeSelected;
+            levelChart.TimeClicked += levelChart_TimeClicked;
 
             rebuildSavedSearchesMenu();
         }
@@ -147,6 +148,27 @@ namespace NuixLogReviewer
         {
             txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", minTicks, maxTicks);
             performSearch();
+        }
+
+        /// <summary>
+        /// Single-clicking the timeline scrolls the grid to the nearest log event at or before the
+        /// clicked time ("round backwards"), selecting it. Does not change the current search - it's a
+        /// navigation aid within the shown set. Scoped to the query in the search bar, which is what
+        /// the chart reflects for a normal search.
+        /// </summary>
+        private void levelChart_TimeClicked(long ticks)
+        {
+            if (repo.Database.TotalRecords < 1) { return; }
+
+            // Use the SAME effective query the grid is showing (base query AND NOT hidden classifiers),
+            // so the closest-event id we find is actually present in the current view and can be
+            // selected. Using the bare search text could return a hidden entry that isn't in the grid.
+            string effectiveQuery = composeEffectiveQuery(txtSearchQuery.Text, buildHiddenFilter());
+            long? id = repo.FindEntryIdAtOrBefore(effectiveQuery, ticks);
+            if (id.HasValue)
+            {
+                resultsGrid.SelectAndScrollTo(id.Value);
+            }
         }
 
         /// <summary>
@@ -314,6 +336,9 @@ namespace NuixLogReviewer
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         txtSearchQuery.Text = "";
+                        // Seed the session hidden-set from the configured defaults for the flags present
+                        // in this loaded set. Done once per load; the user can then toggle per session.
+                        seedVisibilityDefaults();
                         // The classifier table fills from performSearch() below (per-filtered-set counts).
                         performSearch();
                     }));
@@ -343,10 +368,17 @@ namespace NuixLogReviewer
         private void performSearch(long? selectEntryId = null)
         {
             IsBusy = true;
-            string query = txtSearchQuery.Text;
+            string baseQuery = txtSearchQuery.Text;
+            // Hidden classifiers are a view filter: they're ANDed onto the running query (NOT flag:...),
+            // but never written into the search box. Classifier counts + the "excluded" figure are
+            // computed on the BASE query so hidden classifiers still show their real counts and can be
+            // un-hidden.
+            string hiddenFilter = buildHiddenFilter();
+            string effectiveQuery = composeEffectiveQuery(baseQuery, hiddenFilter);
+
             logEntryViewer.Clear();
             levelChart.ShowPlaceholder("Charting...");
-            lblStatus.Text = "Executing search:\n" + query;
+            lblStatus.Text = "Executing search:\n" + baseQuery;
             lblProgress.Text = "";
 
             Task searchTask = new Task(() =>
@@ -363,10 +395,15 @@ namespace NuixLogReviewer
 
                 try
                 {
-                    LogEntrySearchResponse hits = repo.Search(query);
-                    // Time-series for the chart (single-pass, fast). ~120 buckets gives a smooth
-                    // full-width strip; the chart downsamples visually as needed.
-                    var series = repo.GetTimeSeries(query, 120);
+                    // Effective (hidden-filtered) set drives the grid, level readouts, range and chart.
+                    LogEntrySearchResponse hits = repo.Search(effectiveQuery);
+                    var series = repo.GetTimeSeries(effectiveQuery, 120);
+
+                    // Base set (NOT hidden-filtered) drives the classifier table and the excluded count,
+                    // so hidden classifiers still report their true counts.
+                    var baseSummary = repo.Summarize(baseQuery);
+                    int excluded = Math.Max(0, baseSummary.Total - hits.Count);
+
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         lblRecordCounts.Content = String.Format("{0} / {1}", hits.Count.ToString("###,###,##0"), repo.Database.TotalRecords.ToString("###,###,##0"));
@@ -387,14 +424,22 @@ namespace NuixLogReviewer
 
                         levelChart.SetData(series);
 
-                        // Populate the classifier table with per-flag counts for the current set,
-                        // most frequent first. Flags with a zero count in this set are omitted.
-                        flagList.ItemsSource = hits.FlagCounts
+                        // Classifier table from the BASE set (unfiltered by visibility). Each row's eye
+                        // reflects the current session hidden-set. Zero-count flags are omitted.
+                        flagList.ItemsSource = baseSummary.FlagCounts
                             .Where(kv => kv.Value > 0)
                             .OrderByDescending(kv => kv.Value)
                             .ThenBy(kv => kv.Key)
-                            .Select(kv => new LogRepository.FlagCount { Name = kv.Key, Count = kv.Value })
+                            .Select(kv => new LogRepository.FlagCount
+                            {
+                                Name = kv.Key,
+                                Count = kv.Value,
+                                IsShown = !_hiddenFlags.Contains(kv.Key),
+                                Description = LogRepository.Classifiers.ClassifierDescriptionRegistry.DescriptionFor(kv.Key),
+                            })
                             .ToList();
+
+                        updateExcludedIndicator(excluded);
 
                         resultsGrid.SetLogEntries(hits);
 
@@ -419,6 +464,169 @@ namespace NuixLogReviewer
                 }
             });
             searchTask.Start();
+        }
+
+        /// <summary>
+        /// Opens the Classifier Defaults editor. The dialog lists the flags in the current data (plus
+        /// any already in the config) with a "shown by default" checkbox, and saves to
+        /// ClassifierVisibility.config. Saved defaults apply on the next load (per-session toggles in the
+        /// Classifiers tab are unaffected).
+        /// </summary>
+        private void menuClassifierDefaults_Click(object sender, RoutedEventArgs e)
+        {
+            IEnumerable<string> loadedFlags = (repo.Database.TotalRecords > 0)
+                ? repo.Database.GetAllFlags()
+                : Enumerable.Empty<string>();
+
+            var dlg = new ClassifierDefaultsDialog(loadedFlags) { Owner = this };
+            dlg.ShowDialog();
+        }
+
+        /// <summary>
+        /// Opens Windows Explorer at the dedicated configuration folder (see <see cref="ConfigPaths"/>),
+        /// which holds only the user-editable config (ClassifierScripts\, LogPatterns.config,
+        /// ClassifierVisibility.config, SavedSearches\) - not the exe/DLLs.
+        /// </summary>
+        private void menuOpenConfigFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string dir = ConfigPaths.Root; // created on access if missing
+                if (string.IsNullOrEmpty(dir) || !System.IO.Directory.Exists(dir))
+                {
+                    MessageBox.Show("Could not locate the configuration folder.");
+                    return;
+                }
+
+                // Launch Explorer at the folder. UseShellExecute so the OS resolves explorer.exe.
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = dir,
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not open the configuration folder:\n" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Session set of classifier flags currently hidden from the view. Seeded from
+        /// ClassifierVisibility.config defaults on each load, then toggled by the eye buttons.
+        /// Case-insensitive on flag name.
+        /// </summary>
+        private readonly HashSet<string> _hiddenFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Resets the session hidden-set and reseeds it from ClassifierVisibility.config for the flags
+        /// present in the freshly loaded set. Called once per load, so a new load starts from the saved
+        /// defaults again (session toggles don't leak across loads).
+        /// </summary>
+        private void seedVisibilityDefaults()
+        {
+            _hiddenFlags.Clear();
+            var defaults = ClassifierVisibilityRepo.Load(); // flag -> hiddenByDefault
+            foreach (var flag in repo.Database.GetAllFlags())
+            {
+                if (defaults.TryGetValue(flag, out bool hidden) && hidden)
+                {
+                    _hiddenFlags.Add(flag);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Builds the "hide these classifiers" clause: NOT (flag:a OR flag:b ...) for the currently
+        /// hidden flags, or "" when nothing is hidden.
+        /// </summary>
+        private string buildHiddenFilter()
+        {
+            if (_hiddenFlags.Count == 0) return "";
+            string ors = string.Join(" OR ", _hiddenFlags.Select(f => "flag:" + f));
+            return "NOT (" + ors + ")";
+        }
+
+        /// <summary>Combines the user's query with the hidden-classifier filter into the effective query.</summary>
+        private static string composeEffectiveQuery(string baseQuery, string hiddenFilter)
+        {
+            if (string.IsNullOrWhiteSpace(hiddenFilter)) return baseQuery;
+            if (string.IsNullOrWhiteSpace(baseQuery)) return hiddenFilter;
+            return string.Format("({0}) AND {1}", baseQuery, hiddenFilter);
+        }
+
+        /// <summary>Updates the status-bar indicator for how many rows the hidden classifiers removed.</summary>
+        private void updateExcludedIndicator(int excluded)
+        {
+            if (excluded > 0)
+            {
+                lblExcluded.Content = string.Format("{0:N0} hidden by classifiers", excluded);
+                lblExcluded.Visibility = Visibility.Visible;
+                sepExcluded.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                lblExcluded.Visibility = Visibility.Collapsed;
+                sepExcluded.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        /// <summary>
+        /// Toggles a classifier row's shown/hidden state (the eye button), updates the session
+        /// hidden-set, and re-runs the search so the view reflects the change immediately.
+        /// </summary>
+        private void flagEyeToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (!((sender as FrameworkElement)?.Tag is LogRepository.FlagCount fc) || string.IsNullOrEmpty(fc.Name))
+            {
+                return;
+            }
+
+            fc.IsShown = !fc.IsShown;
+            if (fc.IsShown) { _hiddenFlags.Remove(fc.Name); }
+            else { _hiddenFlags.Add(fc.Name); }
+
+            performSearch();
+        }
+
+        /// <summary>
+        /// Hides every currently-listed classifier from the view (adds them all to the session
+        /// hidden-set) and re-runs the search. With everything hidden, the view shows only entries
+        /// that carry no classifier flag.
+        /// </summary>
+        private void btnHideAllFlags_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(flagList.ItemsSource is IEnumerable<LogRepository.FlagCount> rows)) { return; }
+
+            bool changed = false;
+            foreach (var fc in rows)
+            {
+                if (string.IsNullOrEmpty(fc.Name)) { continue; }
+                if (fc.IsShown) { fc.IsShown = false; changed = true; }
+                _hiddenFlags.Add(fc.Name);
+            }
+
+            if (changed) { performSearch(); }
+        }
+
+        /// <summary>
+        /// Shows every classifier again by clearing the entire session hidden-set (a full reset, so it
+        /// also un-hides any flag not currently listed), then re-runs the search.
+        /// </summary>
+        private void btnShowAllFlags_Click(object sender, RoutedEventArgs e)
+        {
+            bool changed = _hiddenFlags.Count > 0;
+            _hiddenFlags.Clear();
+
+            if (flagList.ItemsSource is IEnumerable<LogRepository.FlagCount> rows)
+            {
+                foreach (var fc in rows)
+                {
+                    if (!fc.IsShown) { fc.IsShown = true; }
+                }
+            }
+
+            if (changed) { performSearch(); }
         }
 
         /// <summary>
@@ -708,6 +916,16 @@ namespace NuixLogReviewer
             }
 
             var ids = pattern.Ids as IList<long> ?? pattern.Ids.ToList();
+            showIdsInGrid(ids);
+        }
+
+        /// <summary>
+        /// Populates the grid with exactly the entries for the given ids (an exact drill-down), and
+        /// updates the level readouts, range label and chart to match. Shared by the Patterns and Jobs
+        /// drill-downs.
+        /// </summary>
+        private void showIdsInGrid(IList<long> ids)
+        {
             var hits = repo.BuildResponseForIds(ids);
 
             lblRecordCounts.Content = String.Format("{0} / {1}",
@@ -730,24 +948,265 @@ namespace NuixLogReviewer
             resultsGrid.SetLogEntries(hits);
         }
 
+        // ===================== Jobs tab =====================
+
+        /// <summary>The most recently computed jobs, retained so the sort and the chart overlay can reuse them.</summary>
+        private IList<LogSearchIndex.JobInfo> _lastJobs;
+        private string _jobSortHeader = "Start";
+        private bool _jobSortAscending = true;
+
+        /// <summary>
+        /// Groups the current result set into worker jobs and shows them in the Jobs tab. Runs off the
+        /// UI thread (like search / patterns) since the single-pass grouping can take a moment on a
+        /// large set. When "Show on timeline" is checked, the computed spans are also overlaid on the chart.
+        /// </summary>
+        private void btnComputeJobs_Click(object sender, RoutedEventArgs e)
+        {
+            if (repo.Database.TotalRecords < 1)
+            {
+                MessageBox.Show("Please load some log files first.");
+                return;
+            }
+
+            IsBusy = true;
+            lblStatus.Text = "Computing jobs...";
+            lblProgress.Text = "";
+            string query = txtSearchQuery.Text;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var jobs = repo.GetJobs(query);
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        _lastJobs = jobs;
+                        applyJobSort();
+                        bottomTabs.SelectedItem = tabJobs;
+                        updateJobChartOverlay();
+                        IsBusy = false;
+                    }));
+                }
+                catch (Exception exc)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        IsBusy = false;
+                        MessageBox.Show(exc.Message);
+                    }));
+                }
+            });
+        }
+
+        /// <summary>Re-orders the last computed jobs per the active sort column/direction and binds them.</summary>
+        private void applyJobSort()
+        {
+            if (_lastJobs == null) return;
+
+            IEnumerable<LogSearchIndex.JobInfo> ordered;
+            switch (_jobSortHeader)
+            {
+                case "Job":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.JobId, StringComparer.OrdinalIgnoreCase)
+                                                : _lastJobs.OrderByDescending(j => j.JobId, StringComparer.OrdinalIgnoreCase);
+                    break;
+                case "End":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.LastSeen) : _lastJobs.OrderByDescending(j => j.LastSeen);
+                    break;
+                case "Duration":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.Duration) : _lastJobs.OrderByDescending(j => j.Duration);
+                    break;
+                case "Entries":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.EntryCount) : _lastJobs.OrderByDescending(j => j.EntryCount);
+                    break;
+                case "Warns":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.WarnCount) : _lastJobs.OrderByDescending(j => j.WarnCount);
+                    break;
+                case "Errors":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.ErrorCount) : _lastJobs.OrderByDescending(j => j.ErrorCount);
+                    break;
+                case "Start":
+                default:
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.FirstSeen) : _lastJobs.OrderByDescending(j => j.FirstSeen);
+                    break;
+            }
+
+            jobList.ItemsSource = ordered.ToList();
+            SyncJobSortArrow();
+        }
+
+        private void SyncJobSortArrow()
+        {
+            foreach (var h in FindVisualChildren<System.Windows.Controls.GridViewColumnHeader>(jobList))
+            {
+                if (!(h.Content is string text) || string.IsNullOrEmpty(text)) continue;
+                h.Tag = (text == _jobSortHeader) ? (_jobSortAscending ? "asc" : "desc") : null;
+            }
+        }
+
+        /// <summary>
+        /// Sorts the Jobs grid on header click. Same behavior as the Patterns grid: clicking the active
+        /// column flips direction; Job sorts A-Z first, the time/numeric columns descending first.
+        /// </summary>
+        private void jobList_ColumnHeaderClick(object sender, RoutedEventArgs e)
+        {
+            if (!(e.OriginalSource is System.Windows.Controls.GridViewColumnHeader header)) return;
+            if (!(header.Content is string headerText) || string.IsNullOrEmpty(headerText)) return;
+
+            if (_jobSortHeader == headerText)
+            {
+                _jobSortAscending = !_jobSortAscending;
+            }
+            else
+            {
+                _jobSortHeader = headerText;
+                _jobSortAscending = (headerText == "Job" || headerText == "Start");
+            }
+            applyJobSort();
+        }
+
+        /// <summary>
+        /// Double-clicking a job drills the grid down to exactly that job's entries. We do this as a
+        /// real query (<c>job:job-&lt;id&gt;</c>) rather than pushing the raw id list into the grid, so
+        /// the search box reflects the drill-down and the level chips / classifier toggles / chart all
+        /// compose on top of it (e.g. clicking ERROR then runs <c>(job:...) AND level:error</c>).
+        /// The indexed "job" field holds exactly this JobId, so the query matches the same entries.
+        /// </summary>
+        private void jobList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (!(jobList.SelectedItem is LogSearchIndex.JobInfo job) || string.IsNullOrEmpty(job.JobId))
+            {
+                return;
+            }
+
+            // Drill down from the current query, ANDing in this job. Replace rather than append the
+            // search box so the double-click is a clean "show me this job" action.
+            txtSearchQuery.Text = "job:" + job.JobId;
+            performSearch();
+        }
+
+        private void chkShowJobsOnChart_Click(object sender, RoutedEventArgs e)
+        {
+            updateJobChartOverlay();
+        }
+
+        /// <summary>Highlights the selected job's bracket on the timeline (or clears it when none selected).</summary>
+        private void jobList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var jobId = (jobList.SelectedItem as LogSearchIndex.JobInfo)?.JobId;
+            levelChart.SetSelectedJob(jobId);
+        }
+
+        /// <summary>Pushes (or clears) the computed job spans onto the timeline chart overlay.</summary>
+        private void updateJobChartOverlay()
+        {
+            if (chkShowJobsOnChart.IsChecked == true && _lastJobs != null)
+            {
+                levelChart.SetJobSpans(_lastJobs);
+            }
+            else
+            {
+                levelChart.SetJobSpans(null);
+            }
+        }
+
+
         /// <summary>
         /// Takes the query in the search bar (if there is one) and augments it with additional criteria
-        /// and then runs the new serach.
+        /// and then runs the new search.
         /// </summary>
         /// <param name="additionalCriteria">Additional criteria to add to the query.  Will be ANDed to value in search bar if there is one.</param>
         private void drillDownSearch(string additionalCriteria, bool executeNewQuery = true)
         {
-            string existingQuery = txtSearchQuery.Text;
-            if (String.IsNullOrWhiteSpace(existingQuery))
+            txtSearchQuery.Text = ComposeAnd(txtSearchQuery.Text, additionalCriteria);
+            if (executeNewQuery) { performSearch(); }
+        }
+
+        /// <summary>
+        /// ANDs <paramref name="addition"/> onto <paramref name="existing"/> without piling up
+        /// redundant parentheses. Rules:
+        /// <list type="bullet">
+        /// <item>Blank existing → just the addition.</item>
+        /// <item>Existing already wrapped in one pair of parens that spans the whole thing → reused as
+        /// is (no second layer).</item>
+        /// <item>Existing has a top-level (unparenthesized) OR → wrapped once, because AND binds tighter
+        /// and we must preserve the OR grouping.</item>
+        /// <item>Otherwise (a single term or a pure AND chain) → the addition is simply appended with
+        /// AND, no parens needed.</item>
+        /// </list>
+        /// The additions we generate here are always single atoms (level:x, flag:x, job:x), so they
+        /// never need wrapping themselves.
+        /// </summary>
+        internal static string ComposeAnd(string existing, string addition)
+        {
+            if (string.IsNullOrWhiteSpace(existing)) { return addition; }
+            existing = existing.Trim();
+
+            // If the whole thing is already a single balanced parenthesized group, extend inside the
+            // AND at the top level rather than adding another wrapper: "(a OR b)" + c => "(a OR b) AND c".
+            // If it's a bare top-level OR, we must wrap to keep the OR grouped under the new AND.
+            string toCombine = (!IsFullyWrapped(existing) && HasTopLevelOr(existing))
+                ? "(" + existing + ")"
+                : existing;
+
+            return toCombine + " AND " + addition;
+        }
+
+        /// <summary>
+        /// True if the string is a single parenthesized group covering the entire expression, e.g.
+        /// "(a OR b)" but not "(a) OR (b)" (whose first '(' closes before the end).
+        /// </summary>
+        private static bool IsFullyWrapped(string s)
+        {
+            if (s.Length < 2 || s[0] != '(') { return false; }
+            int depth = 0;
+            bool inQuote = false;
+            for (int i = 0; i < s.Length; i++)
             {
-                txtSearchQuery.Text = additionalCriteria;
-                if (executeNewQuery) { performSearch(); }
+                char c = s[i];
+                if (c == '"') { inQuote = !inQuote; continue; }
+                if (inQuote) { continue; }
+                if (c == '(') { depth++; }
+                else if (c == ')')
+                {
+                    depth--;
+                    // If we return to depth 0 before the last char, the leading '(' didn't wrap it all.
+                    if (depth == 0 && i < s.Length - 1) { return false; }
+                }
             }
-            else
+            return depth == 0;
+        }
+
+        /// <summary>
+        /// True if the expression contains an OR / || operator at the top level (paren depth 0, outside
+        /// quotes). Such expressions must be wrapped before ANDing so the OR stays grouped.
+        /// </summary>
+        private static bool HasTopLevelOr(string s)
+        {
+            int depth = 0;
+            bool inQuote = false;
+            for (int i = 0; i < s.Length; i++)
             {
-                txtSearchQuery.Text = String.Format("({0}) AND {1}", existingQuery, additionalCriteria);
-                if (executeNewQuery) { performSearch(); }
+                char c = s[i];
+                if (c == '"') { inQuote = !inQuote; continue; }
+                if (inQuote) { continue; }
+                if (c == '(') { depth++; continue; }
+                if (c == ')') { depth--; continue; }
+                if (depth != 0) { continue; }
+
+                // "||" operator.
+                if (c == '|' && i + 1 < s.Length && s[i + 1] == '|') { return true; }
+
+                // Whole-word "OR" (case-insensitive), bounded by non-letters so we don't match e.g.
+                // a field/value that merely contains the letters "or".
+                if ((c == 'O' || c == 'o') && i + 1 < s.Length && (s[i + 1] == 'R' || s[i + 1] == 'r'))
+                {
+                    bool leftBoundary = (i == 0) || !char.IsLetterOrDigit(s[i - 1]);
+                    bool rightBoundary = (i + 2 >= s.Length) || !char.IsLetterOrDigit(s[i + 2]);
+                    if (leftBoundary && rightBoundary) { return true; }
+                }
             }
+            return false;
         }
 
         /// <summary>

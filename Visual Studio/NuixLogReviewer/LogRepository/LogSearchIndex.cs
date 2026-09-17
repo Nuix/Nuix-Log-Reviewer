@@ -64,6 +64,7 @@ namespace NuixLogReviewer.LogRepository
                 ["level"] = new LowerCaseKeywordAnalyzer(),
                 ["channel"] = new LowerCaseKeywordAnalyzer(),
                 ["source"] = new LowerCaseKeywordAnalyzer(),
+                ["job"] = new LowerCaseKeywordAnalyzer(),
                 ["flag"] = new WhitespaceAnalyzer(Version),
                 ["exists"] = new KeywordAnalyzer(),
             };
@@ -243,6 +244,19 @@ namespace NuixLogReviewer.LogRepository
                     if (!string.IsNullOrWhiteSpace(flag))
                         doc.Add(new SortedSetDocValuesField("flag_dv", new BytesRef(flag)));
                 }
+            }
+
+            // Worker job association. The job id (job-<32hex>) is the job-level folder in the entry's
+            // path; worker/restart subfolders below it don't change the id. Indexed two ways:
+            //   - "job": a searchable keyword field so drill-down queries like job:job-<id> work;
+            //   - "job_dv": a SortedDocValues column so JobCollector can group entries by job and
+            //     compute per-job lifespans in a single fast columnar pass (like tmpl_dv for patterns).
+            // Non-worker entries carry neither, so they're naturally excluded from job analysis.
+            string jobId = JobIdExtractor.Extract(entry.FilePath);
+            if (jobId != null)
+            {
+                doc.Add(new TextField("job", jobId, Field.Store.NO));
+                doc.Add(new SortedDocValuesField("job_dv", new BytesRef(jobId)));
             }
 
             _writer.AddDocument(doc);
@@ -428,6 +442,47 @@ namespace NuixLogReviewer.LogRepository
             return (min, max);
         }
 
+        /// <summary>
+        /// Within the given query's matched set, returns the id of the newest entry whose event time is
+        /// at or before <paramref name="ticks"/> (i.e. "round backwards" to the closest event), or null
+        /// if none qualifies. A blank query covers the whole loaded set. Uses a single-hit descending
+        /// sort, so it's cheap regardless of match count. Ties on timestamp break by line desc so the
+        /// last line at that instant is chosen.
+        /// </summary>
+        public long? FindEntryIdAtOrBefore(string queryString, long ticks)
+        {
+            var searcher = GetSearcher();
+            if (searcher.IndexReader.MaxDoc == 0) return null;
+
+            // Constrain the matched set to events at or before the clicked time.
+            var atOrBefore = NumericRangeQuery.NewInt64Range("timestamp", long.MinValue, ticks, true, true);
+
+            Query combined;
+            if (string.IsNullOrWhiteSpace(queryString))
+            {
+                combined = atOrBefore;
+            }
+            else
+            {
+                queryString = NotFixRegex.Replace(queryString, "NOT");
+                combined = new BooleanQuery
+                {
+                    { ParseQuery(queryString), Occur.MUST },
+                    { atOrBefore, Occur.MUST },
+                };
+            }
+
+            var sort = new Sort(
+                new SortField("timestamp", SortFieldType.INT64, true),
+                new SortField("line", SortFieldType.INT64, true));
+            var top = searcher.Search(combined, 1, sort);
+            if (top.ScoreDocs.Length == 0) return null;
+
+            var visitor = new DocumentStoredFieldVisitor("id");
+            searcher.Doc(top.ScoreDocs[0].Doc, visitor);
+            return long.Parse(visitor.Document.Get("id"));
+        }
+
         private static long? TopTimestampTicksForQuery(IndexSearcher searcher, Query query, bool reverse)
         {
             var sort = new Sort(new SortField("timestamp", SortFieldType.INT64, reverse));
@@ -527,6 +582,64 @@ namespace NuixLogReviewer.LogRepository
 
             var searcher = GetSearcher();
             var collector = new PatternCollector();
+            searcher.Search(query, collector);
+
+            return collector.Build();
+        }
+
+        /// <summary>
+        /// One row of the Jobs view: a worker job and its observed lifespan. Start/End are the first
+        /// and last event times seen across all of the job's worker/restart logs, so they reflect the
+        /// real observed span even when a job ends without a clean "finished" line. Warn/Error are the
+        /// per-level counts within the job; Ids are the contributing entries for drill-down.
+        /// </summary>
+        public sealed class JobInfo
+        {
+            public string JobId { get; set; }
+            public DateTime FirstSeen { get; set; }
+            public DateTime LastSeen { get; set; }
+            public TimeSpan Duration => LastSeen - FirstSeen;
+            public int EntryCount { get; set; }
+            public int WarnCount { get; set; }
+            public int ErrorCount { get; set; }
+            public IReadOnlyList<long> Ids { get; set; }
+
+            /// <summary>Compact human-readable duration (e.g. "5d 16h", "3h 12m", "45s") for the grid.</summary>
+            public string DurationText
+            {
+                get
+                {
+                    TimeSpan s = Duration;
+                    if (s.TotalDays >= 1) return $"{(int)s.TotalDays}d {s.Hours}h";
+                    if (s.TotalHours >= 1) return $"{s.Hours}h {s.Minutes}m";
+                    if (s.TotalMinutes >= 1) return $"{s.Minutes}m {s.Seconds}s";
+                    return $"{s.Seconds}s";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Groups the matched set by worker job id (job_dv) and returns each job with its lifespan
+        /// (first/last event), entry/warn/error counts, and contributing entry ids for drill-down.
+        /// A blank query covers the whole loaded set. Single pass over matching docs via doc-values
+        /// (job_dv/ts_dv/lvl_dv/id_dv), so it scales with the match count. Non-worker entries have no
+        /// job_dv and are naturally excluded. Results are ordered by start time ascending.
+        /// </summary>
+        public IList<JobInfo> MineJobs(string queryString)
+        {
+            Query query;
+            if (string.IsNullOrWhiteSpace(queryString))
+            {
+                query = new MatchAllDocsQuery();
+            }
+            else
+            {
+                queryString = NotFixRegex.Replace(queryString, "NOT");
+                query = ParseQuery(queryString);
+            }
+
+            var searcher = GetSearcher();
+            var collector = new JobCollector();
             searcher.Search(query, collector);
 
             return collector.Build();
@@ -735,6 +848,94 @@ namespace NuixLogReviewer.LogRepository
                 });
             }
             result.Sort((a, b) => b.Count.CompareTo(a.Count));
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Collector that groups matching documents by worker job id (job_dv), accumulating per-job
+    /// first/last-seen (ts_dv), entry/warn/error counts (lvl_dv) and the contributing ids (id_dv).
+    /// Documents with no job_dv (non-worker logs) are skipped. Reads only doc-values, so the whole
+    /// pass is a fast columnar scan - the job analog of PatternCollector.
+    /// </summary>
+    internal sealed class JobCollector : ICollector
+    {
+        private sealed class Bucket
+        {
+            public List<long> Ids = new List<long>();
+            public long FirstTicks;
+            public long LastTicks;
+            public int Warn;
+            public int Error;
+        }
+
+        private readonly Dictionary<string, Bucket> _buckets = new Dictionary<string, Bucket>(256);
+        private readonly BytesRef _scratch = new BytesRef();
+        private SortedDocValues _job;
+        private NumericDocValues _ts;
+        private NumericDocValues _lvl;
+        private NumericDocValues _id;
+
+        public void SetScorer(Scorer scorer) { }
+
+        public void SetNextReader(AtomicReaderContext context)
+        {
+            // job_dv may be absent for a segment where no entry was a worker log.
+            _job = context.AtomicReader.GetSortedDocValues("job_dv");
+            _ts = context.AtomicReader.GetNumericDocValues("ts_dv");
+            _lvl = context.AtomicReader.GetNumericDocValues("lvl_dv");
+            _id = context.AtomicReader.GetNumericDocValues("id_dv");
+        }
+
+        public void Collect(int doc)
+        {
+            if (_job == null || _ts == null || _id == null) return;
+
+            // Ord < 0 means this document has no job_dv value (not a worker log) - skip it.
+            int ord = _job.GetOrd(doc);
+            if (ord < 0) return;
+
+            _job.LookupOrd(ord, _scratch);
+            string jobId = _scratch.Utf8ToString();
+            long ticks = _ts.Get(doc);
+            long id = _id.Get(doc);
+
+            if (!_buckets.TryGetValue(jobId, out var bucket))
+            {
+                bucket = new Bucket { FirstTicks = ticks, LastTicks = ticks };
+                _buckets[jobId] = bucket;
+            }
+            bucket.Ids.Add(id);
+            if (ticks < bucket.FirstTicks) bucket.FirstTicks = ticks;
+            if (ticks > bucket.LastTicks) bucket.LastTicks = ticks;
+
+            switch ((int)(_lvl?.Get(doc) ?? 4))
+            {
+                case 1: bucket.Warn++; break;
+                case 2: bucket.Error++; break;
+            }
+        }
+
+        public bool AcceptsDocsOutOfOrder => true;
+
+        /// <summary>Materializes the accumulated buckets into result rows, ordered by start time ascending.</summary>
+        public IList<LogSearchIndex.JobInfo> Build()
+        {
+            var result = new List<LogSearchIndex.JobInfo>(_buckets.Count);
+            foreach (var kv in _buckets)
+            {
+                result.Add(new LogSearchIndex.JobInfo
+                {
+                    JobId = kv.Key,
+                    FirstSeen = new DateTime(kv.Value.FirstTicks),
+                    LastSeen = new DateTime(kv.Value.LastTicks),
+                    EntryCount = kv.Value.Ids.Count,
+                    WarnCount = kv.Value.Warn,
+                    ErrorCount = kv.Value.Error,
+                    Ids = kv.Value.Ids,
+                });
+            }
+            result.Sort((a, b) => a.FirstSeen.CompareTo(b.FirstSeen));
             return result;
         }
     }

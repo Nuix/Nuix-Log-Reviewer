@@ -1,0 +1,1 @@
+level:(error OR warn) OR content:(error OR exception OR warn)

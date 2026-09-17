@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
-    public class WorkerStateChangeClassifier : IEntryClassifier
+    public class WorkerStateChangeClassifier : IEntryClassifier, IClassifierDescriptions
     {
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
@@ -19,6 +19,15 @@ namespace NuixLogReviewer.LogRepository.Classifiers
             {
                 return null;
             }
+        }
+
+        public IEnumerable<ClassifierFlagDescription> GetFlagDescriptions()
+        {
+            return new[]
+            {
+                new ClassifierFlagDescription("worker_state",
+                    "A worker changed lifecycle state (e.g. \"Changing state from PENDING to RUNNING\")."),
+            };
         }
     }
 }

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
-    public class MultiLineClassifier : IEntryClassifier
+    public class MultiLineClassifier : IEntryClassifier, IClassifierDescriptions
     {
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
@@ -18,6 +18,15 @@ namespace NuixLogReviewer.LogRepository.Classifiers
             {
                 return null;
             }
+        }
+
+        public IEnumerable<ClassifierFlagDescription> GetFlagDescriptions()
+        {
+            return new[]
+            {
+                new ClassifierFlagDescription("multi_line",
+                    "The entry spans multiple lines (e.g. a stack trace or wrapped message)."),
+            };
         }
     }
 }

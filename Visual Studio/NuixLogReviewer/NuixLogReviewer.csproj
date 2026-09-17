@@ -36,6 +36,7 @@
     <Resource Include="report_disk.png" />
     <Resource Include="zoom_in.png" />
     <Resource Include="zoom.png" />
+    <Resource Include="Assets\nuix-logo.png" />
   </ItemGroup>
 
   <ItemGroup>
@@ -60,10 +61,16 @@
     <None Update="LICENSE.TXT">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="SavedSearches\*.txt">
+    <None Update="Configuration\SavedSearches\*.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="LogPatterns.config">
+    <None Update="Configuration\LogPatterns.config">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Configuration\ClassifierVisibility.config">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Configuration\ClassifierScripts\*.js">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
@@ -72,6 +79,7 @@
     <PackageReference Include="Lucene.Net" Version="4.8.0-beta00018" />
     <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00018" />
     <PackageReference Include="Lucene.Net.QueryParser" Version="4.8.0-beta00018" />
+    <PackageReference Include="Jint" Version="4.16.2" />
     <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
     <PackageReference Include="Ookii.Dialogs.Wpf" Version="5.0.1" />
     <PackageReference Include="SharpZipLib" Version="1.4.2" />

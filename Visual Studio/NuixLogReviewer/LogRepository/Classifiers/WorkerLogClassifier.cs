@@ -1,27 +1,19 @@
-﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository.Classifiers
 {
     public class WorkerLogClassifier : IEntryClassifier
     {
-        private static Regex jobIdRegex = new Regex(@"job-[a-f0-9]{32}", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         public IEnumerable<string> Classify(NuixLogEntry entry)
         {
-            // Mark entries from a filed that apper to come from a log file that is nested in a job folder
-            // created by a worker process.
-            if (entry.FilePath.Contains("job-") && jobIdRegex.IsMatch(entry.FilePath))
+            // Mark entries whose log file lives within a worker job folder (job-<32hex>). Uses the
+            // shared JobIdExtractor so this flag and the indexed job_dv always agree on what a
+            // worker log is and which job it belongs to.
+            if (JobIdExtractor.IsWorkerLog(entry.FilePath))
             {
                 return new string[] { "worker_log" };
             }
-            else
-            {
-                return null;
-            }
+            return null;
         }
     }
 }
