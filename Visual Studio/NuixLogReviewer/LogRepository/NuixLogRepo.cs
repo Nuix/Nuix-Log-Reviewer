@@ -328,13 +328,18 @@ namespace NuixLogReviewer.LogRepository
             var ctx = new Insights.InsightContext(summary, fileDisplay, jobs, patterns, timeline);
 
             var thresholds = new Insights.InsightThresholds();
-            var engine = new Insights.InsightEngine(new Insights.IInsightDetector[]
+            var detectors = new List<Insights.IInsightDetector>
             {
                 new Insights.ErrorSpikeDetector(thresholds),
                 new Insights.ErrorDominantFileDetector(thresholds),
                 new Insights.JobFailureDetector(thresholds),
                 new Insights.PatternAnomalyDetector(thresholds),
-            });
+            };
+            // Append user-supplied scripted detectors (Configuration/InsightScripts/*.js). Reloaded each
+            // Analyze so edits are picked up without a restart; failures are logged and skipped.
+            detectors.AddRange(Insights.InsightScriptLoader.LoadDetectors());
+
+            var engine = new Insights.InsightEngine(detectors);
 
             // Built-in detectors produce trusted, compiler-built queries, but validate anyway so a bad
             // one degrades gracefully (jump disabled) rather than erroring on click - cheap (parse only).

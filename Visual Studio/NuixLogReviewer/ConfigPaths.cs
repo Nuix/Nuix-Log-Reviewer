@@ -64,5 +64,8 @@ namespace NuixLogReviewer
 
         /// <summary>Directory holding scripted classifiers (*.js).</summary>
         public static string ClassifierScriptsDir => Path.Combine(Root, "ClassifierScripts");
+
+        /// <summary>Directory holding scripted insight detectors (*.js).</summary>
+        public static string InsightScriptsDir => Path.Combine(Root, "InsightScripts");
     }
 }
