@@ -334,6 +334,9 @@ namespace NuixLogReviewer.LogRepository
                 new Insights.ErrorDominantFileDetector(thresholds),
                 new Insights.JobFailureDetector(thresholds),
                 new Insights.PatternAnomalyDetector(thresholds),
+                new Insights.SilenceGapDetector(thresholds),
+                new Insights.ErrorRampUpDetector(thresholds),
+                new Insights.ErrorOnsetDetector(thresholds),
             };
             // Append user-supplied scripted detectors (Configuration/InsightScripts/*.js). Reloaded each
             // Analyze so edits are picked up without a restart; failures are logged and skipped.
