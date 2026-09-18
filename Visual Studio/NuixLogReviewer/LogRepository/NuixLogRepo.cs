@@ -311,6 +311,16 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
+        /// Timeline click-to-scroll with hidden PATTERN templates applied via the fast set-membership
+        /// filter path (not an OR'd phrase negation), so a chart click while patterns are hidden stays
+        /// snappy. <paramref name="query"/> carries the (few) hidden classifier/file clauses.
+        /// </summary>
+        public long? FindEntryIdAtOrBefore(string query, IReadOnlyCollection<string> hiddenTemplates, long ticks)
+        {
+            return SearchIndex.FindEntryIdAtOrBefore(query, hiddenTemplates, ticks);
+        }
+
+        /// <summary>
         /// Single-pass summary (total, per-level and per-flag counts, time span) for a query's matched
         /// set. Used to compute classifier counts on the unfiltered-by-visibility set and the
         /// "N rows excluded by classifiers" figure, independent of the effective (hidden-filtered) query.

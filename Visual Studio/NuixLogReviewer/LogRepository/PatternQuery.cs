@@ -34,17 +34,9 @@ namespace NuixLogReviewer.LogRepository
             return "(" + string.Join(" OR ", terms) + ")";
         }
 
-        /// <summary>
-        /// A hide clause for the given templates: <c>NOT (tmpl:"a" OR tmpl:"b" ...)</c>, or "" when none.
-        /// </summary>
-        public static string HideClause(IEnumerable<string> hiddenTemplates)
-        {
-            var terms = (hiddenTemplates ?? Enumerable.Empty<string>())
-                .Where(t => !string.IsNullOrEmpty(t))
-                .Select(t => "tmpl:\"" + FileDisplay.EscapePhrase(t.ToLowerInvariant()) + "\"")
-                .ToList();
-            if (terms.Count == 0) { return ""; }
-            return "NOT (" + string.Join(" OR ", terms) + ")";
-        }
+        // NOTE: pattern hiding no longer builds a NOT (tmpl:"a" OR tmpl:"b" ...) query string. Folding
+        // hundreds of template phrases into one boolean made the classic QueryParser pathologically slow
+        // (seconds per pass, and it froze the UI on a chart click). Hidden templates are now applied as a
+        // single FieldCacheTermsFilter MUST_NOT over the tmpl field - see LogSearchIndex.ComposeFilteredQuery.
     }
 }

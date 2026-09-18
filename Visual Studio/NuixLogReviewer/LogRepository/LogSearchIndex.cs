@@ -576,6 +576,29 @@ namespace NuixLogReviewer.LogRepository
         /// </summary>
         public long? FindEntryIdAtOrBefore(string queryString, long ticks)
         {
+            Query baseQ = null;
+            if (!string.IsNullOrWhiteSpace(queryString))
+            {
+                baseQ = ParseQuery(NotFixRegex.Replace(queryString, "NOT"));
+            }
+            return FindEntryIdAtOrBeforeCore(baseQ, ticks);
+        }
+
+        /// <summary>
+        /// Timeline-click variant applying hidden PATTERN templates as a fast FieldCacheTermsFilter
+        /// (see <see cref="ComposeFilteredQuery"/>) instead of an OR'd phrase negation - so a chart
+        /// click while patterns are hidden doesn't re-parse a giant query (which froze the UI).
+        /// </summary>
+        public long? FindEntryIdAtOrBefore(string baseQuery, IReadOnlyCollection<string> hiddenTemplates, long ticks)
+        {
+            Query baseQ = (string.IsNullOrWhiteSpace(baseQuery) && (hiddenTemplates == null || hiddenTemplates.Count == 0))
+                ? null
+                : ComposeFilteredQuery(baseQuery, hiddenTemplates);
+            return FindEntryIdAtOrBeforeCore(baseQ, ticks);
+        }
+
+        private long? FindEntryIdAtOrBeforeCore(Query baseQ, long ticks)
+        {
             var searcher = GetSearcher();
             if (searcher.IndexReader.MaxDoc == 0) return null;
 
@@ -583,16 +606,15 @@ namespace NuixLogReviewer.LogRepository
             var atOrBefore = NumericRangeQuery.NewInt64Range("timestamp", long.MinValue, ticks, true, true);
 
             Query combined;
-            if (string.IsNullOrWhiteSpace(queryString))
+            if (baseQ == null)
             {
                 combined = atOrBefore;
             }
             else
             {
-                queryString = NotFixRegex.Replace(queryString, "NOT");
                 combined = new BooleanQuery
                 {
-                    { ParseQuery(queryString), Occur.MUST },
+                    { baseQ, Occur.MUST },
                     { atOrBefore, Occur.MUST },
                 };
             }

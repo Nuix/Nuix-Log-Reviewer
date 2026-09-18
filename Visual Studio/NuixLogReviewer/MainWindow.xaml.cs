@@ -161,15 +161,30 @@ namespace NuixLogReviewer
         {
             if (repo.Database.TotalRecords < 1) { return; }
 
-            // Use the SAME effective query the grid is showing (base query AND NOT hidden classifiers),
-            // so the closest-event id we find is actually present in the current view and can be
-            // selected. Using the bare search text could return a hidden entry that isn't in the grid.
-            string effectiveQuery = buildEffectiveQuery(txtSearchQuery.Text);
-            long? id = repo.FindEntryIdAtOrBefore(effectiveQuery, ticks);
-            if (id.HasValue)
+            // Use the SAME effective view the grid is showing so the closest-event id we find is
+            // actually present in the current view and can be selected. Hidden classifiers/files stay in
+            // the query string (few clauses); hidden PATTERNS go through the fast set-membership filter
+            // (buildEffectiveQueryNoTemplates + the hidden-template list) - NOT an OR'd phrase negation,
+            // which made this click re-parse a giant query and hang the UI.
+            string effectiveQuery = buildEffectiveQueryNoTemplates(txtSearchQuery.Text);
+            var hiddenTemplates = _hiddenTemplates.Count > 0 ? new List<string>(_hiddenTemplates) : null;
+
+            // Run off the UI thread: the lookup can be non-trivial on large sets, and freezing the UI on
+            // a single click is exactly the hang we're avoiding. Marshal the scroll back to the UI.
+            IsBusy = true;
+            Task.Run(() =>
             {
-                resultsGrid.SelectAndScrollTo(id.Value);
-            }
+                long? id = null;
+                try { id = repo.FindEntryIdAtOrBefore(effectiveQuery, hiddenTemplates, ticks); }
+                finally
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        IsBusy = false;
+                        if (id.HasValue) { resultsGrid.SelectAndScrollTo(id.Value); }
+                    }));
+                }
+            });
         }
 
         /// <summary>
@@ -658,25 +673,6 @@ namespace NuixLogReviewer
         /// </summary>
         private readonly HashSet<string> _hiddenTemplates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>The "hide these patterns" clause: NOT (tmpl:"a" OR tmpl:"b" ...), or "" when none.</summary>
-        private string buildHiddenTemplateFilter()
-        {
-            return LogRepository.PatternQuery.HideClause(_hiddenTemplates);
-        }
-
-        /// <summary>
-        /// The effective query the grid/chart/counts actually run: the user's query ANDed with the
-        /// hidden-classifier, hidden-file, and hidden-pattern view filters. All are view-only (never
-        /// written to the search box). Used by the search path and the timeline click lookup.
-        /// </summary>
-        private string buildEffectiveQuery(string baseQuery)
-        {
-            string q = composeEffectiveQuery(baseQuery, buildHiddenFilter());
-            q = composeEffectiveQuery(q, buildHiddenFileFilter());
-            q = composeEffectiveQuery(q, buildHiddenTemplateFilter());
-            return q;
-        }
-
         /// <summary>
         /// The effective query WITHOUT the hidden-pattern clause (only the few hidden classifier/file
         /// clauses). The main search path pairs this with <see cref="_hiddenTemplates"/> passed as a
@@ -1001,7 +997,7 @@ namespace NuixLogReviewer
             }
 
             setPatternsStale(true);   // listed counts are now as-of last Compute, not the live view
-            performSearch();          // grid/chart/counts update live via buildEffectiveQuery
+            performSearch();          // grid/chart/counts update live via the hidden-template filter
         }
 
         /// <summary>
