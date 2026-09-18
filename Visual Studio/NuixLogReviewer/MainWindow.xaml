@@ -351,10 +351,6 @@
                         <Button x:Name="btnComputePatterns" DockPanel.Dock="Left" Content="Compute Patterns"
                                 Click="btnComputePatterns_Click" Padding="6,2"
                                 ToolTip="Group the current results by normalized message template."/>
-                        <CheckBox x:Name="chkRareFirst" DockPanel.Dock="Left" Content="Rare first"
-                                  IsChecked="True"
-                                  VerticalAlignment="Center" Margin="10,0,0,0" Click="chkRareFirst_Click"
-                                  ToolTip="Sort by count ascending to surface the rare one-off patterns."/>
                         <Button x:Name="btnHideAllPatterns" DockPanel.Dock="Left" Content="Hide all"
                                 Click="btnHideAllPatterns_Click" Padding="6,2" Margin="10,0,0,0"
                                 ToolTip="Hide every listed pattern's entries from the current view."/>
@@ -365,6 +361,9 @@
                                    Margin="12,0,0,0" Visibility="Collapsed"
                                    Foreground="{StaticResource Brush.Warn}"
                                    Text="Visibility changed - listed counts are from the last Compute. Recompute to refresh."/>
+                        <TextBlock x:Name="lblPatternsTotal" DockPanel.Dock="Right" VerticalAlignment="Center"
+                                   Margin="0,0,4,0" Foreground="{StaticResource Brush.TextMuted}"
+                                   ToolTip="Number of distinct patterns listed (and the total entries they cover)."/>
                     </DockPanel>
                     <ListView x:Name="patternList" Grid.Row="1" MouseDoubleClick="patternList_MouseDoubleClick"
                               GridViewColumnHeader.Click="patternList_ColumnHeaderClick"

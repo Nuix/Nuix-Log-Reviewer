@@ -351,6 +351,54 @@ namespace NuixLogReviewer.LogRepository
 
         public LogEntrySearchResponse Search(string query)
         {
+            return Search(query, null);
+        }
+
+        /// <summary>
+        /// Search + summarize where hidden PATTERN templates are applied as a fast set-membership filter
+        /// (FieldCacheTermsFilter MUST_NOT) rather than an OR'd phrase negation baked into the query
+        /// string. <paramref name="query"/> is the base query already carrying the (few) hidden
+        /// classifier/file clauses; <paramref name="hiddenTemplates"/> are the raw regex-templates to
+        /// exclude. This is what keeps pattern "Hide all" fast on large template sets.
+        /// </summary>
+        public LogEntrySearchResponse SearchWithHiddenTemplates(
+            string query, IReadOnlyCollection<string> hiddenTemplates,
+            LogSearchIndex.FilteredSetSummary reuseSummary)
+        {
+            IList<long> ids = SearchIndex.Search(this, query, hiddenTemplates);
+            LogEntrySearchResponse result = new LogEntrySearchResponse(new NuixLogEntryItemProvider()
+            {
+                Ids = ids,
+                SourceRepository = this
+            }, 1000);
+
+            var summary = reuseSummary ?? SearchIndex.SummarizeFilteredSet(query, hiddenTemplates);
+            result.InfoEntryCount = summary.Info;
+            result.WarnEntryCount = summary.Warn;
+            result.ErrorEntryCount = summary.Error;
+            result.DebugEntryCount = summary.Debug;
+            result.FilteredMinTime = summary.MinTicks.HasValue ? new DateTime(summary.MinTicks.Value) : (DateTime?)null;
+            result.FilteredMaxTime = summary.MaxTicks.HasValue ? new DateTime(summary.MaxTicks.Value) : (DateTime?)null;
+            foreach (var kv in summary.FlagCounts) { result.FlagCounts[kv.Key] = kv.Value; }
+            return result;
+        }
+
+        /// <summary>Time-series for a base query with hidden PATTERN templates applied via the filter path.</summary>
+        public LogSearchIndex.TimeSeries GetTimeSeriesWithHiddenTemplates(
+            string query, IReadOnlyCollection<string> hiddenTemplates, int buckets)
+        {
+            return SearchIndex.BucketedLevelCounts(query, hiddenTemplates, buckets);
+        }
+
+        /// <summary>
+        /// Runs a search. When <paramref name="reuseSummary"/> is provided (the caller already computed
+        /// <see cref="LogSearchIndex.SummarizeFilteredSet"/> for the SAME query - e.g. the common case
+        /// where nothing is hidden, so the effective query equals the base query the classifier/file
+        /// tables were summarized from), it's reused instead of running the full doc-values summary pass
+        /// again. This removes one whole-index scan from the hot path (notably plain "clear search").
+        /// </summary>
+        public LogEntrySearchResponse Search(string query, LogSearchIndex.FilteredSetSummary reuseSummary)
+        {
             IList<long> ids = SearchIndex.Search(this, query);
             LogEntrySearchResponse result = new LogEntrySearchResponse(new NuixLogEntryItemProvider()
             {
@@ -363,7 +411,7 @@ namespace NuixLogReviewer.LogRepository
             // This replaces the old approach of running a separate Lucene count per level plus one
             // per classifier flag (and a DISTINCT(Flags) DB scan), which made broad queries such as
             // the blank "clear search" slow (it scanned the whole index ~25-30 times).
-            var summary = SearchIndex.SummarizeFilteredSet(query);
+            var summary = reuseSummary ?? SearchIndex.SummarizeFilteredSet(query);
 
             result.InfoEntryCount = summary.Info;
             result.WarnEntryCount = summary.Warn;

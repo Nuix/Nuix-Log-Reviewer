@@ -31,6 +31,16 @@ namespace NuixLogReviewer.LogRepository
 
         private readonly object _lockObject = new object();
         private readonly LogPatternMasker _masker = LogPatternMasker.CreateDefault();
+
+        // Second-stage template folding (Drain): maps each regex-template (tmpl_dv value) to a collapsed
+        // "drain" template, so near-duplicate regex-templates group into one pattern. Built lazily from
+        // the distinct tmpl_dv set on first use after a load, and invalidated whenever the reader is
+        // (re)opened. When disabled/empty, patterns fall back to raw regex-templates (identity).
+        private readonly bool _drainEnabled = true;
+        private readonly double _drainSimilarity = 0.6;
+        private IReadOnlyDictionary<string, string> _drainMap;             // regexTemplate -> drainTemplate
+        private IReadOnlyDictionary<string, List<string>> _drainMembers;   // drainTemplate -> [regexTemplate...]
+
         private Analyzer _analyzer;
         private FSDirectory _directory;
         private IndexWriter _writer;
@@ -86,6 +96,7 @@ namespace NuixLogReviewer.LogRepository
             {
                 _reader = DirectoryReader.Open(_directory);
                 _searcher = new IndexSearcher(_reader);
+                _drainMap = null; _drainMembers = null; // rebuild against the new reader on demand
             }
             else
             {
@@ -96,6 +107,7 @@ namespace NuixLogReviewer.LogRepository
                     _reader.Dispose();
                     _reader = refreshed;
                     _searcher = new IndexSearcher(_reader);
+                    _drainMap = null; _drainMembers = null; // stale after content change
                 }
             }
             return _searcher;
@@ -235,6 +247,9 @@ namespace NuixLogReviewer.LogRepository
                 // entry id as a doc-value so the pass can bucket ids without stored-field retrieval.
                 new SortedDocValuesField("tmpl_dv", new BytesRef(_maskedTemplate)),
                 new NumericDocValuesField("id_dv", entry.ID),
+                // line_dv mirrors the line number as a doc-value so the fast id-collection path (Search)
+                // can reproduce the (timestamp, line) grid ordering without stored-field retrieval.
+                new NumericDocValuesField("line_dv", entry.LineNumber),
                 // Raw content, stored, so the Patterns view can reveal a concrete example line on demand.
                 new StoredField("content_raw", entry.Content ?? ""),
             };
@@ -303,7 +318,7 @@ namespace NuixLogReviewer.LogRepository
             return 4;
         }
 
-        public IList<long> Search(NuixLogRepo repo, string queryString, int maxResults = 100000)
+        public IList<long> Search(NuixLogRepo repo, string queryString)
         {
             if (string.IsNullOrWhiteSpace(queryString))
                 // All entries, ordered by event time (ascending) so the grid's global order is truly
@@ -316,23 +331,81 @@ namespace NuixLogReviewer.LogRepository
                 return repo.Database.GetAllIds();
 
             queryString = NotFixRegex.Replace(queryString, "NOT");
-            var query = ParseQuery(queryString);
-            var sort = new Sort(
-                new SortField("timestamp", SortFieldType.INT64),
-                new SortField("line", SortFieldType.INT64));
+            return SearchIds(ParseQuery(queryString));
+        }
 
-            var searcher = GetSearcher();
-            var hits = searcher.Search(query, maxResults, sort);
-
-            var ids = new long[hits.ScoreDocs.Length];
-            for (int i = 0; i < hits.ScoreDocs.Length; i++)
+        /// <summary>
+        /// Search variant that applies hidden templates as a fast <see cref="FieldCacheTermsFilter"/>
+        /// MUST_NOT (see <see cref="ComposeFilteredQuery"/>) rather than a giant OR'd phrase negation in
+        /// the query string. When there are no hidden templates and the base query is blank, uses the
+        /// same time-sorted GetAllIds fast path as <see cref="Search(NuixLogRepo,string)"/>.
+        /// </summary>
+        public IList<long> Search(NuixLogRepo repo, string baseQuery, IReadOnlyCollection<string> hiddenTemplates)
+        {
+            if ((hiddenTemplates == null || hiddenTemplates.Count == 0) && string.IsNullOrWhiteSpace(baseQuery))
             {
-                var visitor = new DocumentStoredFieldVisitor("id");
-                searcher.Doc(hits.ScoreDocs[i].Doc, visitor);
-                ids[i] = long.Parse(visitor.Document.Get("id"));
+                return repo.Database.GetAllIds();
+            }
+            return SearchIds(ComposeFilteredQuery(baseQuery, hiddenTemplates));
+        }
+
+        /// <summary>
+        /// Collects matching ids for a prepared query via a doc-values scan (id_dv/ts_dv/line_dv),
+        /// ordered by (timestamp asc, line asc). No stored-field retrieval, no result cap.
+        /// </summary>
+        private IList<long> SearchIds(Query query)
+        {
+            var searcher = GetSearcher();
+            var collector = new IdSortCollector();
+            searcher.Search(query, collector);
+            return collector.SortedIds();
+        }
+
+        /// <summary>
+        /// Builds an executable query from a base query STRING plus a set of hidden templates, WITHOUT
+        /// routing the (potentially hundreds of) templates through the classic QueryParser. Hidden
+        /// templates are applied as a single <see cref="FieldCacheTermsFilter"/> MUST_NOT over the
+        /// <c>tmpl</c> field instead of a giant <c>NOT (tmpl:"a" OR tmpl:"b" ...)</c> boolean of phrase
+        /// queries - which is what made pattern "Hide all" pathologically slow (the parser + boolean
+        /// rewrite of ~hundreds of quoted phrases containing special chars dominated the time, and it
+        /// was paid on every pass: grid, summary and chart). Set-membership via the field cache is a
+        /// single clause and runs in tens of ms. The base query still parses normally.
+        /// </summary>
+        private Query ComposeFilteredQuery(string baseQuery, IReadOnlyCollection<string> hiddenTemplates)
+        {
+            Query baseQ;
+            if (string.IsNullOrWhiteSpace(baseQuery))
+            {
+                baseQ = new MatchAllDocsQuery();
+            }
+            else
+            {
+                baseQ = ParseQuery(NotFixRegex.Replace(baseQuery, "NOT"));
             }
 
-            return ids;
+            if (hiddenTemplates == null || hiddenTemplates.Count == 0)
+            {
+                return baseQ;
+            }
+
+            // tmpl is a LowerCaseKeywordAnalyzer field (whole value = one token), so the field-cache
+            // keys are the lower-cased template strings. Match the indexing/query casing.
+            var values = hiddenTemplates
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Select(t => t.ToLowerInvariant())
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            if (values.Length == 0)
+            {
+                return baseQ;
+            }
+
+            var hiddenFilter = new FieldCacheTermsFilter("tmpl", values);
+            return new BooleanQuery
+            {
+                { baseQ, Occur.MUST },
+                { new ConstantScoreQuery(hiddenFilter), Occur.MUST_NOT },
+            };
         }
 
         private Query ParseQuery(string queryString)
@@ -439,7 +512,20 @@ namespace NuixLogReviewer.LogRepository
                 queryString = NotFixRegex.Replace(queryString, "NOT");
                 query = ParseQuery(queryString);
             }
+            return SummarizeQuery(query);
+        }
 
+        /// <summary>
+        /// Summary variant applying hidden templates as a fast FieldCacheTermsFilter MUST_NOT
+        /// (see <see cref="ComposeFilteredQuery"/>) instead of an OR'd phrase negation.
+        /// </summary>
+        public FilteredSetSummary SummarizeFilteredSet(string baseQuery, IReadOnlyCollection<string> hiddenTemplates)
+        {
+            return SummarizeQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates));
+        }
+
+        private FilteredSetSummary SummarizeQuery(Query query)
+        {
             var summary = new FilteredSetSummary();
             var searcher = GetSearcher();
             if (searcher.IndexReader.MaxDoc == 0)
@@ -555,8 +641,6 @@ namespace NuixLogReviewer.LogRepository
         /// </summary>
         public TimeSeries BucketedLevelCounts(string queryString, int buckets)
         {
-            if (buckets < 1) buckets = 1;
-
             Query query;
             if (string.IsNullOrWhiteSpace(queryString))
             {
@@ -567,6 +651,21 @@ namespace NuixLogReviewer.LogRepository
                 queryString = NotFixRegex.Replace(queryString, "NOT");
                 query = ParseQuery(queryString);
             }
+            return BucketedLevelCountsForQuery(query, buckets);
+        }
+
+        /// <summary>
+        /// Chart variant applying hidden templates as a fast FieldCacheTermsFilter MUST_NOT
+        /// (see <see cref="ComposeFilteredQuery"/>) instead of an OR'd phrase negation.
+        /// </summary>
+        public TimeSeries BucketedLevelCounts(string baseQuery, IReadOnlyCollection<string> hiddenTemplates, int buckets)
+        {
+            return BucketedLevelCountsForQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates), buckets);
+        }
+
+        private TimeSeries BucketedLevelCountsForQuery(Query query, int buckets)
+        {
+            if (buckets < 1) buckets = 1;
 
             var searcher = GetSearcher();
 
@@ -598,6 +697,14 @@ namespace NuixLogReviewer.LogRepository
             public DateTime LastSeen { get; set; }
             /// <summary>Ids of the entries in this pattern bucket, for exact drill-down selection.</summary>
             public IReadOnlyList<long> Ids { get; set; }
+
+            /// <summary>
+            /// The raw regex-templates this pattern covers. When Drain folding is active a pattern may
+            /// represent several near-duplicate regex-templates; drill-down and hide must query the
+            /// <c>tmpl</c> field for ALL of them (see <see cref="PatternQuery"/>). Falls back to just
+            /// <see cref="Template"/> when unfolded.
+            /// </summary>
+            public IReadOnlyList<string> MemberTemplates { get; set; }
 
             /// <summary>Per-level entry counts within this template (from lvl_dv).</summary>
             public int Info { get; set; }
@@ -676,10 +783,56 @@ namespace NuixLogReviewer.LogRepository
             }
 
             var searcher = GetSearcher();
-            var collector = new PatternCollector();
+            EnsureDrainMap();
+            // Fold each raw regex-template (tmpl_dv) to its collapsed drain template while bucketing.
+            // Identity when Drain is disabled/empty. Members let the view expand a pattern back to the
+            // exact regex-templates it covers (for drill-down / hide, which query the tmpl field).
+            var collector = new PatternCollector(_drainMap, _drainMembers);
             searcher.Search(query, collector);
 
             return collector.Build();
+        }
+
+        /// <summary>
+        /// Lazily builds the Drain fold map (regexTemplate → drainTemplate) and its reverse
+        /// (drainTemplate → member regexTemplates) from the DISTINCT tmpl_dv values in the current
+        /// reader. Distinct values are read from the SortedDocValues term dictionary (one entry per
+        /// unique template, not per doc), so this is cheap and — because BuildMap sorts its input —
+        /// deterministic regardless of load order. No-op when already built or Drain is disabled.
+        /// </summary>
+        private void EnsureDrainMap()
+        {
+            if (!_drainEnabled) { _drainMap = null; _drainMembers = null; return; }
+            if (_drainMap != null) return;
+
+            var distinct = new List<string>();
+            var sdv = MultiDocValues.GetSortedValues(_reader, "tmpl_dv");
+            if (sdv != null)
+            {
+                int n = sdv.ValueCount;
+                var scratch = new BytesRef();
+                for (int ord = 0; ord < n; ord++)
+                {
+                    sdv.LookupOrd(ord, scratch);
+                    string t = scratch.Utf8ToString();
+                    if (!string.IsNullOrEmpty(t)) distinct.Add(t);
+                }
+            }
+
+            var map = DrainTemplateMiner.BuildMap(distinct, _drainSimilarity);
+            var members = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kv in map)
+            {
+                if (!members.TryGetValue(kv.Value, out var list))
+                {
+                    list = new List<string>();
+                    members[kv.Value] = list;
+                }
+                list.Add(kv.Key);
+            }
+
+            _drainMap = map;
+            _drainMembers = members;
         }
 
         /// <summary>
@@ -877,6 +1030,59 @@ namespace NuixLogReviewer.LogRepository
     }
 
     /// <summary>
+    /// Collects the ids of all matching documents via doc-values (id_dv), tagged with their sort keys
+    /// (ts_dv, line_dv), then returns them ordered by (timestamp asc, line asc) - the grid's global
+    /// chronological order. This replaces retrieving the stored "id" field per hit + a capped
+    /// TopFieldCollector: it reads only columnar doc-values (fast even for very large matched sets, e.g.
+    /// a pattern "Hide all") and has no result cap, so the grid is never silently truncated.
+    /// </summary>
+    internal sealed class IdSortCollector : ICollector
+    {
+        private struct Row { public long Ts; public long Line; public long Id; }
+
+        private readonly List<Row> _rows = new List<Row>();
+        private NumericDocValues _id;
+        private NumericDocValues _ts;
+        private NumericDocValues _line;
+
+        public void SetScorer(Scorer scorer) { }
+
+        public void SetNextReader(AtomicReaderContext context)
+        {
+            _id = context.AtomicReader.GetNumericDocValues("id_dv");
+            _ts = context.AtomicReader.GetNumericDocValues("ts_dv");
+            _line = context.AtomicReader.GetNumericDocValues("line_dv");
+        }
+
+        public void Collect(int doc)
+        {
+            if (_id == null) return;
+            _rows.Add(new Row
+            {
+                Ts = _ts?.Get(doc) ?? 0,
+                Line = _line?.Get(doc) ?? 0,
+                Id = _id.Get(doc),
+            });
+        }
+
+        public bool AcceptsDocsOutOfOrder => true;
+
+        /// <summary>Matching ids ordered by (timestamp asc, line asc), matching the grid's global order.</summary>
+        public IList<long> SortedIds()
+        {
+            _rows.Sort((a, b) =>
+            {
+                int c = a.Ts.CompareTo(b.Ts);
+                if (c != 0) return c;
+                return a.Line.CompareTo(b.Line);
+            });
+            var ids = new long[_rows.Count];
+            for (int i = 0; i < _rows.Count; i++) ids[i] = _rows[i].Id;
+            return ids;
+        }
+    }
+
+    /// <summary>
     /// Collector that groups matching documents by their normalized message template (tmpl_dv),
     /// accumulating per-template count, first/last-seen (ts_dv) and the contributing ids (id_dv).
     /// Reads only doc-values, so no per-document stored-field retrieval is needed - the whole pass
@@ -902,6 +1108,21 @@ namespace NuixLogReviewer.LogRepository
         private NumericDocValues _id;
         private NumericDocValues _lvl;
 
+        // Optional second-stage fold: maps a raw regex-template (tmpl_dv) to a collapsed "drain"
+        // template so near-duplicate templates bucket together. Null => group by raw template. Members
+        // maps a drain template back to its regex-templates so the view can expand a pattern for
+        // drill-down / hide (which query the tmpl field by exact regex-template).
+        private readonly IReadOnlyDictionary<string, string> _fold;
+        private readonly IReadOnlyDictionary<string, List<string>> _members;
+
+        public PatternCollector(
+            IReadOnlyDictionary<string, string> fold = null,
+            IReadOnlyDictionary<string, List<string>> members = null)
+        {
+            _fold = fold;
+            _members = members;
+        }
+
         public void SetScorer(Scorer scorer) { }
 
         public void SetNextReader(AtomicReaderContext context)
@@ -918,6 +1139,8 @@ namespace NuixLogReviewer.LogRepository
 
             _tmpl.Get(doc, _scratch);
             string template = _scratch.Utf8ToString();
+            // Fold to the collapsed drain template when a map is present (identity otherwise).
+            if (_fold != null && _fold.TryGetValue(template, out var folded)) template = folded;
             long ticks = _ts.Get(doc);
             long id = _id.Get(doc);
 
@@ -949,6 +1172,13 @@ namespace NuixLogReviewer.LogRepository
             var result = new List<LogSearchIndex.LogPattern>(_buckets.Count);
             foreach (var kv in _buckets)
             {
+                // Members are the raw regex-templates this (possibly folded) pattern covers, used to
+                // expand drill-down / hide back to exact tmpl queries. When unfolded, the member set is
+                // just the template itself.
+                IReadOnlyList<string> members;
+                if (_members != null && _members.TryGetValue(kv.Key, out var m)) members = m;
+                else members = new[] { kv.Key };
+
                 result.Add(new LogSearchIndex.LogPattern
                 {
                     Template = kv.Key,
@@ -960,6 +1190,7 @@ namespace NuixLogReviewer.LogRepository
                     Warn = kv.Value.Warn,
                     Error = kv.Value.Error,
                     Debug = kv.Value.Debug,
+                    MemberTemplates = members,
                 });
             }
             result.Sort((a, b) => b.Count.CompareTo(a.Count));

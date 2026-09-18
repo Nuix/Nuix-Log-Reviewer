@@ -19,6 +19,22 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
+        /// A drill-down query for a (possibly folded) pattern that may cover several regex-templates:
+        /// <c>(tmpl:"a" OR tmpl:"b" ...)</c>. Falls back to a single-template query when there's one
+        /// member. Used so a Drain-collapsed pattern drills into ALL the lines it represents.
+        /// </summary>
+        public static string DrillDownQuery(IEnumerable<string> templates)
+        {
+            var terms = (templates ?? Enumerable.Empty<string>())
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Select(t => "tmpl:\"" + FileDisplay.EscapePhrase(t.ToLowerInvariant()) + "\"")
+                .ToList();
+            if (terms.Count == 0) { return ""; }
+            if (terms.Count == 1) { return terms[0]; }
+            return "(" + string.Join(" OR ", terms) + ")";
+        }
+
+        /// <summary>
         /// A hide clause for the given templates: <c>NOT (tmpl:"a" OR tmpl:"b" ...)</c>, or "" when none.
         /// </summary>
         public static string HideClause(IEnumerable<string> hiddenTemplates)

@@ -410,11 +410,16 @@ namespace NuixLogReviewer
                 _history.UpdateCurrentPosition(captureViewState());
             }
 
-            // Hidden classifiers are a view filter: they're ANDed onto the running query (NOT flag:...),
-            // but never written into the search box. Classifier counts + the "excluded" figure are
-            // computed on the BASE query so hidden classifiers still show their real counts and can be
-            // un-hidden.
-            string effectiveQuery = buildEffectiveQuery(baseQuery);
+            // Hidden classifiers/files are a view filter: they're ANDed onto the running query
+            // (NOT flag:.../NOT file:...), but never written into the search box. Hidden PATTERNS are
+            // applied separately as a fast set-membership filter (see below) rather than folded into the
+            // query string, because hundreds of OR'd template phrases made the parser pathologically
+            // slow. effectiveQuery therefore carries only the (few) flag/file clauses.
+            string effectiveQuery = buildEffectiveQueryNoTemplates(baseQuery);
+            // Snapshot the hidden-template set for the background thread (copy so UI edits can't race).
+            var hiddenTemplates = _hiddenTemplates.Count > 0
+                ? new List<string>(_hiddenTemplates)
+                : null;
 
             logEntryViewer.Clear();
             levelChart.ShowPlaceholder("Charting...");
@@ -435,18 +440,30 @@ namespace NuixLogReviewer
 
                 try
                 {
+                    // Base set (NOT hidden-filtered) drives the classifier table and the excluded count,
+                    // so hidden classifiers still report their true counts. Computed first so it can be
+                    // REUSED as the effective-set summary when nothing is hidden (the common case),
+                    // saving a whole-index scan - see the reuse arg below.
+                    var baseSummary = repo.Summarize(baseQuery);
+
+                    // When NO view-filters are active (no hidden flags/files/templates) the effective
+                    // query IS the base query, so the grid's summary equals baseSummary; reuse it to
+                    // skip a duplicate whole-index pass.
+                    bool sameAsBase = hiddenTemplates == null
+                        && string.Equals(effectiveQuery, baseQuery, StringComparison.Ordinal);
+
                     // Effective (hidden-filtered) set drives the grid, level readouts, range and chart.
-                    LogEntrySearchResponse hits = repo.Search(effectiveQuery);
+                    // Hidden patterns go through the fast FieldCacheTermsFilter path.
+                    LogEntrySearchResponse hits = repo.SearchWithHiddenTemplates(
+                        effectiveQuery, hiddenTemplates, sameAsBase ? baseSummary : null);
                     // Chart resolution scales with the chart's rendered width (see LevelTimeChart);
                     // remember how to re-fetch this series so a resize can re-bucket it.
                     int chartBuckets = levelChart.CurrentDesiredBucketCount;
                     string chartQuery = effectiveQuery;
-                    _chartSource = n => repo.GetTimeSeries(chartQuery, n);
-                    var series = repo.GetTimeSeries(effectiveQuery, chartBuckets);
+                    var chartHidden = hiddenTemplates;
+                    _chartSource = n => repo.GetTimeSeriesWithHiddenTemplates(chartQuery, chartHidden, n);
+                    var series = repo.GetTimeSeriesWithHiddenTemplates(effectiveQuery, hiddenTemplates, chartBuckets);
 
-                    // Base set (NOT hidden-filtered) drives the classifier table and the excluded count,
-                    // so hidden classifiers still report their true counts.
-                    var baseSummary = repo.Summarize(baseQuery);
                     int excluded = Math.Max(0, baseSummary.Total - hits.Count);
 
                     Dispatcher.BeginInvoke(new Action(() =>
@@ -657,6 +674,20 @@ namespace NuixLogReviewer
             string q = composeEffectiveQuery(baseQuery, buildHiddenFilter());
             q = composeEffectiveQuery(q, buildHiddenFileFilter());
             q = composeEffectiveQuery(q, buildHiddenTemplateFilter());
+            return q;
+        }
+
+        /// <summary>
+        /// The effective query WITHOUT the hidden-pattern clause (only the few hidden classifier/file
+        /// clauses). The main search path pairs this with <see cref="_hiddenTemplates"/> passed as a
+        /// separate set-membership FILTER (FieldCacheTermsFilter), because folding hundreds of pattern
+        /// templates into a giant <c>NOT (tmpl:"a" OR ...)</c> string made the classic QueryParser +
+        /// boolean rewrite pathologically slow (seconds), paid on every grid/summary/chart pass.
+        /// </summary>
+        private string buildEffectiveQueryNoTemplates(string baseQuery)
+        {
+            string q = composeEffectiveQuery(baseQuery, buildHiddenFilter());
+            q = composeEffectiveQuery(q, buildHiddenFileFilter());
             return q;
         }
 
@@ -930,6 +961,26 @@ namespace NuixLogReviewer
         private IList<LogSearchIndex.LogPattern> _lastPatterns;
 
         /// <summary>
+        /// The indexed regex-templates a pattern covers, lower-cased to match the tmpl index key. With
+        /// Drain folding a single pattern (whose <see cref="LogSearchIndex.LogPattern.Template"/> may be
+        /// a collapsed "&lt;*&gt;" template) represents several regex-templates, so hide/show must apply
+        /// to ALL of them. Falls back to the pattern's own template when unfolded.
+        /// </summary>
+        private static IEnumerable<string> PatternHideKeys(LogSearchIndex.LogPattern p)
+        {
+            var members = p?.MemberTemplates;
+            if (members != null && members.Count > 0)
+            {
+                foreach (var m in members)
+                    if (!string.IsNullOrEmpty(m)) yield return m.ToLowerInvariant();
+            }
+            else if (!string.IsNullOrEmpty(p?.Template))
+            {
+                yield return p.Template.ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
         /// Toggles a pattern's shown/hidden state. Updates the session hidden-template set and re-runs
         /// the main search so the grid/chart reflect it immediately - but does NOT recompute the
         /// Patterns list (it's a snapshot); the row just flips its eye, and a stale hint appears since
@@ -942,10 +993,12 @@ namespace NuixLogReviewer
                 return;
             }
 
-            string key = p.Template.ToLowerInvariant();
             p.IsShown = !p.IsShown;
-            if (p.IsShown) { _hiddenTemplates.Remove(key); }
-            else { _hiddenTemplates.Add(key); }
+            foreach (var key in PatternHideKeys(p))
+            {
+                if (p.IsShown) { _hiddenTemplates.Remove(key); }
+                else { _hiddenTemplates.Add(key); }
+            }
 
             setPatternsStale(true);   // listed counts are now as-of last Compute, not the live view
             performSearch();          // grid/chart/counts update live via buildEffectiveQuery
@@ -980,7 +1033,7 @@ namespace NuixLogReviewer
             {
                 if (string.IsNullOrEmpty(p.Template)) { continue; }
                 if (p.IsShown) { p.IsShown = false; changed = true; }
-                _hiddenTemplates.Add(p.Template.ToLowerInvariant());
+                foreach (var key in PatternHideKeys(p)) { _hiddenTemplates.Add(key); }
             }
             if (changed) { setPatternsStale(true); performSearch(); }
         }
@@ -989,6 +1042,28 @@ namespace NuixLogReviewer
         private void setPatternsStale(bool stale)
         {
             lblPatternsStale.Visibility = stale ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>
+        /// Updates the Patterns-tab total: the number of distinct patterns listed and the total entries
+        /// they cover (which, with Drain folding, is the sum across each folded pattern's members). Blank
+        /// when nothing has been computed yet.
+        /// </summary>
+        private void updatePatternsTotal()
+        {
+            if (_lastPatterns == null || _lastPatterns.Count == 0)
+            {
+                lblPatternsTotal.Text = "";
+                return;
+            }
+
+            int patternCount = _lastPatterns.Count;
+            long entryTotal = 0;
+            foreach (var p in _lastPatterns) { entryTotal += p.Count; }
+
+            lblPatternsTotal.Text = string.Format(
+                "{0:###,###,##0} pattern{1} · {2:###,###,##0} entries",
+                patternCount, patternCount == 1 ? "" : "s", entryTotal);
         }
 
         /// <summary>
@@ -1019,12 +1094,20 @@ namespace NuixLogReviewer
                         // Seed each pattern's eye state from the session hidden-set. Compute mines the
                         // BASE query, so a hidden pattern still appears here (marked eye-off) - which is
                         // what lets the user un-hide it after a recompute. Recompute clears "stale".
+                        // With Drain folding a pattern covers several regex-templates, so it reads as
+                        // hidden when ANY of its member templates is in the hidden set.
                         foreach (var p in patterns)
                         {
-                            p.IsShown = !_hiddenTemplates.Contains((p.Template ?? "").ToLowerInvariant());
+                            bool anyHidden = false;
+                            foreach (var key in PatternHideKeys(p))
+                            {
+                                if (_hiddenTemplates.Contains(key)) { anyHidden = true; break; }
+                            }
+                            p.IsShown = !anyHidden;
                         }
                         _lastPatterns = patterns;
                         setPatternsStale(false);
+                        updatePatternsTotal();
                         applyPatternSort();
                         bottomTabs.SelectedItem = tabPatterns;
                         IsBusy = false;
@@ -1043,11 +1126,11 @@ namespace NuixLogReviewer
 
         /// <summary>
         /// Current pattern sort column ("Count" | "First Seen" | "Last Seen" | "Pattern") and
-        /// direction. Defaults to Count (with direction driven by the "Rare first" toggle). Header
-        /// clicks update these; the "Rare first" checkbox is kept in sync when Count is the sort key.
+        /// direction. Defaults to Count ascending, which surfaces the rare one-off patterns first;
+        /// clicking a column header changes/flips the sort.
         /// </summary>
         private string _patternSortHeader = "Count";
-        private bool _patternSortAscending = true; // matches "Rare first" (checked) default => count ascending
+        private bool _patternSortAscending = true; // Count ascending => rare patterns first
 
         /// <summary>Re-orders the last computed patterns per the active sort column/direction and binds them.</summary>
         private void applyPatternSort()
@@ -1118,7 +1201,7 @@ namespace NuixLogReviewer
         /// <summary>
         /// Ensures the sort-direction arrow sits on the active sort column header with the right
         /// direction, and is cleared from all others. Driven from applyPatternSort so it stays correct
-        /// no matter what triggered the sort (a header click, the "Rare first" checkbox, or the initial
+        /// no matter what triggered the sort (a header click or the initial Compute Patterns). Each
         /// Compute Patterns). Each header's Tag ("asc"/"desc"/null) is turned into an up/down triangle
         /// by the SortableHeaderStyle template. Safe to call before the headers exist (no-op then).
         /// </summary>
@@ -1153,21 +1236,9 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
-        /// The "Rare first" toggle is just a shortcut for sorting by Count ascending (rare) vs
-        /// descending (frequent). Keep it wired to the same sort model as the column headers.
-        /// </summary>
-        private void chkRareFirst_Click(object sender, RoutedEventArgs e)
-        {
-            _patternSortHeader = "Count";
-            _patternSortAscending = (chkRareFirst.IsChecked == true);
-            applyPatternSort();
-        }
-
-        /// <summary>
         /// Sorts the patterns table when a column header is clicked. Clicking the current sort column
         /// flips the direction; clicking a different column sorts it (Count/First/Last default to
-        /// descending as the most useful first look; Pattern defaults to ascending A-Z). The "Rare
-        /// first" checkbox is kept in sync when Count is the active sort column, and applyPatternSort
+        /// descending as the most useful first look; Pattern defaults to ascending A-Z). applyPatternSort
         /// moves the direction arrow to the active header.
         /// </summary>
         private void patternList_ColumnHeaderClick(object sender, RoutedEventArgs e)
@@ -1185,13 +1256,6 @@ namespace NuixLogReviewer
                 _patternSortHeader = headerText;
                 // Pattern reads best A-Z; the numeric/time columns read best largest/newest first.
                 _patternSortAscending = (headerText == "Pattern");
-            }
-
-            // Keep the "Rare first" checkbox meaningful: it reflects Count-ascending, and is only
-            // relevant when Count is the sort key.
-            if (_patternSortHeader == "Count")
-            {
-                chkRareFirst.IsChecked = _patternSortAscending;
             }
 
             applyPatternSort();
