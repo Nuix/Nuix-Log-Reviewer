@@ -32,6 +32,36 @@ namespace NuixLogReviewer.GUI
             get { return resultsGrid.SelectedItem as NuixLogEntry; }
         }
 
+        /// <summary>
+        /// The id of the entry that best represents the current position, for a history/bookmark
+        /// snapshot: the selected row's id if there is a selection, otherwise the top-visible row's id,
+        /// or null if the grid is empty. Restored later via <see cref="SelectAndScrollTo"/>.
+        /// </summary>
+        public long? CurrentPositionEntryId
+        {
+            get
+            {
+                var sel = SelectedEntry;
+                if (sel != null) { return sel.ID; }
+
+                var entries = CurrentLogEntries;
+                if (entries == null || entries.Count == 0) { return null; }
+
+                var sv = FindScrollViewer(resultsGrid);
+                double extent = sv?.ExtentHeight ?? 0;
+                if (sv == null || extent <= 0) { return null; }
+
+                // Same top-visible index derivation as ReportVisibleRange (offset is in item units
+                // under row virtualization).
+                int total = entries.Count;
+                int first = (int)Math.Floor(sv.VerticalOffset / extent * total);
+                if (first < 0) first = 0;
+                if (first >= total) first = total - 1;
+                var top = entries[first];
+                return top?.ID;
+            }
+        }
+
         public LogEntryGrid()
         {
             InitializeComponent();
@@ -44,6 +74,13 @@ namespace NuixLogReviewer.GUI
                     sv.ScrollChanged += (a, b) => ReportVisibleRange();
                 }
             };
+
+            // Show/hide the Δ (gap) column live from the shared gap-visual settings. (DataGridColumns
+            // aren't in the visual tree, so their Visibility is toggled here rather than by binding.)
+            var gaps = GapVisualSettings.Instance;
+            colGap.Visibility = gaps.ShowGapColumn ? Visibility.Visible : Visibility.Collapsed;
+            gaps.Changed += (s, e) =>
+                colGap.Visibility = gaps.ShowGapColumn ? Visibility.Visible : Visibility.Collapsed;
         }
 
         public void SetLogEntries(IList<NuixLogEntry> entries)

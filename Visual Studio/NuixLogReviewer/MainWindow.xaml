@@ -8,6 +8,7 @@
         WindowStartupLocation="CenterScreen"
         Title="Nuix Log Reviewer" Height="768" Width="1024"
         Background="{StaticResource Brush.WindowBackground}"
+        PreviewKeyDown="Window_PreviewKeyDown"
         Closing="Window_Closing">
 
     <Window.Resources>
@@ -113,6 +114,40 @@
                         <MenuItem Header="_Classifier Defaults..." Name="menuClassifierDefaults" Click="menuClassifierDefaults_Click"
                                   ToolTip="Choose which classifiers are shown or hidden by default when logs are loaded."/>
                         <Separator/>
+                        <MenuItem Header="Time-_gap cue">
+                            <MenuItem Header="Show gap _border between rows" IsCheckable="True"
+                                      IsChecked="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=ShowGapBorder, Mode=TwoWay}"
+                                      ToolTip="Color the line between grid rows by the time gap to the previous row in the current view."/>
+                            <MenuItem Header="Show _Δ (gap) column" IsCheckable="True"
+                                      IsChecked="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=ShowGapColumn, Mode=TwoWay}"
+                                      ToolTip="Show a column with the elapsed time since the previous row."/>
+                            <Separator/>
+                            <MenuItem StaysOpenOnClick="True">
+                                <MenuItem.Header>
+                                    <StackPanel Orientation="Vertical" Width="240" Margin="4">
+                                        <TextBlock Text="Show a line only for gaps at / above (seconds):" Margin="0,0,0,2"/>
+                                        <DockPanel LastChildFill="True">
+                                            <TextBox DockPanel.Dock="Right" Width="64" Margin="6,0,0,0"
+                                                     Text="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=FloorSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
+                                            <Slider Minimum="0" Maximum="3600" SmallChange="1" LargeChange="30"
+                                                    IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                                                    Value="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=FloorSeconds, Mode=TwoWay}"/>
+                                        </DockPanel>
+                                        <TextBlock Text="Highlight (full red) at / above (seconds):" Margin="0,8,0,2"/>
+                                        <DockPanel LastChildFill="True">
+                                            <TextBox DockPanel.Dock="Right" Width="64" Margin="6,0,0,0"
+                                                     Text="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=HighlightThresholdSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat=N0}"/>
+                                            <Slider Minimum="1" Maximum="3600" SmallChange="1" LargeChange="60"
+                                                    IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                                                    Value="{Binding Source={x:Static local:GapVisualSettings.Instance}, Path=HighlightThresholdSeconds, Mode=TwoWay}"/>
+                                        </DockPanel>
+                                        <TextBlock Text="Below the floor no line shows; between floor and highlight the line warms teal → red." 
+                                                   Foreground="{StaticResource Brush.TextMuted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </MenuItem.Header>
+                            </MenuItem>
+                        </MenuItem>
+                        <Separator/>
                         <MenuItem Header="Open Configuration _Folder" Name="menuOpenConfigFolder" Click="menuOpenConfigFolder_Click"
                                   ToolTip="Open the folder containing the configuration files (classifier scripts, LogPatterns.config, ClassifierVisibility.config, saved searches)."/>
                     </MenuItem>
@@ -134,17 +169,29 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="auto"/>
                     <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Button x:Name="btnRunSearch" Click="btnRunSearch_Click" Grid.Column="0"
+                <Button x:Name="btnHistoryBack" Click="btnHistoryBack_Click" Grid.Column="0"
+                        Style="{StaticResource IconButton}" IsEnabled="False" Margin="0,0,2,0"
+                        ToolTip="Back (Alt+Left) - return to the previous view">
+                    <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="14"/>
+                </Button>
+                <Button x:Name="btnHistoryForward" Click="btnHistoryForward_Click" Grid.Column="1"
+                        Style="{StaticResource IconButton}" IsEnabled="False" Margin="0,0,6,0"
+                        ToolTip="Forward (Alt+Right)">
+                    <TextBlock Text="&#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="14"/>
+                </Button>
+                <Button x:Name="btnRunSearch" Click="btnRunSearch_Click" Grid.Column="2"
                         Style="{StaticResource IconButton}" ToolTip="Run search">
                     <Image Source="magnifier.png" Width="16" Height="16"/>
                 </Button>
-                <Label Content="Query" Grid.Column="1" FontWeight="SemiBold" Foreground="{StaticResource Brush.TextMuted}" Margin="6,0,4,0"/>
-                <TextBox x:Name="txtSearchQuery" FontFamily="{StaticResource Font.Mono}" KeyUp="txtSearchQuery_KeyUp" Grid.Column="2"/>
-                <Button x:Name="btnClearSearch" Click="btnClearSearch_Click" Grid.Column="3" Margin="5,0,0,0"
+                <Label Content="Query" Grid.Column="3" FontWeight="SemiBold" Foreground="{StaticResource Brush.TextMuted}" Margin="6,0,4,0"/>
+                <TextBox x:Name="txtSearchQuery" FontFamily="{StaticResource Font.Mono}" KeyUp="txtSearchQuery_KeyUp" Grid.Column="4"/>
+                <Button x:Name="btnClearSearch" Click="btnClearSearch_Click" Grid.Column="5" Margin="5,0,0,0"
                         Style="{StaticResource IconButton}" ToolTip="Clear search">
                     <Image Source="cancel.png" Width="16" Height="16"/>
                 </Button>
@@ -308,6 +355,16 @@
                                   IsChecked="True"
                                   VerticalAlignment="Center" Margin="10,0,0,0" Click="chkRareFirst_Click"
                                   ToolTip="Sort by count ascending to surface the rare one-off patterns."/>
+                        <Button x:Name="btnHideAllPatterns" DockPanel.Dock="Left" Content="Hide all"
+                                Click="btnHideAllPatterns_Click" Padding="6,2" Margin="10,0,0,0"
+                                ToolTip="Hide every listed pattern's entries from the current view."/>
+                        <Button x:Name="btnShowAllPatterns" DockPanel.Dock="Left" Content="Show all"
+                                Click="btnShowAllPatterns_Click" Padding="6,2" Margin="6,0,0,0"
+                                ToolTip="Un-hide every pattern (clears per-pattern hides)."/>
+                        <TextBlock x:Name="lblPatternsStale" DockPanel.Dock="Left" VerticalAlignment="Center"
+                                   Margin="12,0,0,0" Visibility="Collapsed"
+                                   Foreground="{StaticResource Brush.Warn}"
+                                   Text="Visibility changed - listed counts are from the last Compute. Recompute to refresh."/>
                     </DockPanel>
                     <ListView x:Name="patternList" Grid.Row="1" MouseDoubleClick="patternList_MouseDoubleClick"
                               GridViewColumnHeader.Click="patternList_ColumnHeaderClick"
@@ -332,11 +389,57 @@
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="ToolTip" Value="{Binding Template}"/>
+                                <Style.Triggers>
+                                    <!-- Hidden patterns (eye-off) are greyed to show they're excluded
+                                         from the current view; their listed counts remain as-computed. -->
+                                    <DataTrigger Binding="{Binding IsShown}" Value="False">
+                                        <Setter Property="Opacity" Value="0.45"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
                             </Style>
                         </ListView.ItemContainerStyle>
                         <ListView.View>
                             <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
+                                <GridViewColumn Header="" Width="34">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="{Binding EyeGlyph}" ToolTip="{Binding EyeToolTip}"
+                                                    Click="patternEyeToggle_Click" Tag="{Binding}"
+                                                    Style="{StaticResource EyeToggleButton}"/>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
                                 <GridViewColumn Header="Count" DisplayMemberBinding="{Binding Count, StringFormat='{}{0:N0}'}" Width="70"/>
+                                <GridViewColumn Header="Level" Width="60">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DominantLevel}" FontWeight="SemiBold">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="ERROR">
+                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Error}"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="WARN">
+                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Warn}"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="INFO">
+                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Info}"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="DEBUG">
+                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Debug}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="ERR" DisplayMemberBinding="{Binding Error, StringFormat='{}{0:N0}'}" Width="55"/>
+                                <GridViewColumn Header="WARN" DisplayMemberBinding="{Binding Warn, StringFormat='{}{0:N0}'}" Width="55"/>
+                                <GridViewColumn Header="INFO" DisplayMemberBinding="{Binding Info, StringFormat='{}{0:N0}'}" Width="55"/>
+                                <GridViewColumn Header="DBG" DisplayMemberBinding="{Binding Debug, StringFormat='{}{0:N0}'}" Width="55"/>
                                 <GridViewColumn Header="First Seen" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                 <GridViewColumn Header="Last Seen" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                 <GridViewColumn Header="Pattern" DisplayMemberBinding="{Binding Template}" Width="900"/>

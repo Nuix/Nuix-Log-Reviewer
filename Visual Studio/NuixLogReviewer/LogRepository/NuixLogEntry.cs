@@ -33,6 +33,14 @@ namespace NuixLogReviewer.LogRepository
 
         public IEnumerable<string> Flags { get; set; }
 
+        /// <summary>
+        /// Elapsed time since the PREVIOUS row in the current (time-sorted) filtered view - i.e. the
+        /// gap to the chronologically preceding matched entry, NOT necessarily the adjacent raw log
+        /// line. Null for the first row of the result set. Computed when a page is fetched
+        /// (see NuixLogEntryItemProvider.FetchRange). Drives the grid's time-gap visual cue.
+        /// </summary>
+        public TimeSpan? GapToPrevious { get; set; }
+
         public NuixLogEntry() {
             Flags = new String[] { };
         }

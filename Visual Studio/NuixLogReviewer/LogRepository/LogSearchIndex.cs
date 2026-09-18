@@ -66,6 +66,7 @@ namespace NuixLogReviewer.LogRepository
                 ["source"] = new LowerCaseKeywordAnalyzer(),
                 ["job"] = new LowerCaseKeywordAnalyzer(),
                 ["file"] = new LowerCaseKeywordAnalyzer(),
+                ["tmpl"] = new LowerCaseKeywordAnalyzer(),
                 ["flag"] = new WhitespaceAnalyzer(Version),
                 ["exists"] = new KeywordAnalyzer(),
             };
@@ -202,6 +203,10 @@ namespace NuixLogReviewer.LogRepository
             if (entry == null) throw new ArgumentNullException(nameof(entry));
             if (!InWriteMode) throw new InvalidOperationException("LogSearchIndex is not in write mode");
 
+            // Masked message template, computed once and reused for tmpl_dv (mining) and the queryable
+            // tmpl keyword field (per-pattern hide/drill-down).
+            string _maskedTemplate = _masker.Mask(entry.Content) ?? "";
+
             var doc = new Document
             {
                 new Int64Field("id", entry.ID, Field.Store.YES),
@@ -228,11 +233,18 @@ namespace NuixLogReviewer.LogRepository
                 // Pattern-mining columns (see MinePatterns): tmpl_dv = the normalized message template
                 // (computed once here so the mining pass is a fast doc-values scan); id_dv mirrors the
                 // entry id as a doc-value so the pass can bucket ids without stored-field retrieval.
-                new SortedDocValuesField("tmpl_dv", new BytesRef(_masker.Mask(entry.Content))),
+                new SortedDocValuesField("tmpl_dv", new BytesRef(_maskedTemplate)),
                 new NumericDocValuesField("id_dv", entry.ID),
                 // Raw content, stored, so the Patterns view can reveal a concrete example line on demand.
                 new StoredField("content_raw", entry.Content ?? ""),
             };
+
+            // Queryable keyword form of the template (whole lowercased value as one token) so per-pattern
+            // hide filters (AND NOT (tmpl:"<template>")) and pattern drill-down compose like flag:/file:.
+            if (_maskedTemplate.Length > 0)
+            {
+                doc.Add(new TextField("tmpl", _maskedTemplate.ToLowerInvariant(), Field.Store.NO));
+            }
 
             if (entry.Flags?.Any() == true)
             {
@@ -578,7 +590,7 @@ namespace NuixLogReviewer.LogRepository
         /// One row of the Patterns view: a normalized message template, how many entries produced it,
         /// the time span over which it occurred, and the ids of the contributing entries (for drill-down).
         /// </summary>
-        public sealed class LogPattern
+        public sealed class LogPattern : System.ComponentModel.INotifyPropertyChanged
         {
             public string Template { get; set; }
             public int Count { get; set; }
@@ -586,6 +598,62 @@ namespace NuixLogReviewer.LogRepository
             public DateTime LastSeen { get; set; }
             /// <summary>Ids of the entries in this pattern bucket, for exact drill-down selection.</summary>
             public IReadOnlyList<long> Ids { get; set; }
+
+            /// <summary>Per-level entry counts within this template (from lvl_dv).</summary>
+            public int Info { get; set; }
+            public int Warn { get; set; }
+            public int Error { get; set; }
+            public int Debug { get; set; }
+
+            private bool _isShown = true;
+            /// <summary>
+            /// Whether this pattern's entries are shown (true) or hidden (false) in the current view.
+            /// The Patterns list is a compute-on-demand snapshot, so toggling this updates the eye and
+            /// the main grid (via the session hidden-templates set) but does NOT re-derive the list's
+            /// counts - those stay as-of the last Compute (a stale hint surfaces the difference).
+            /// </summary>
+            public bool IsShown
+            {
+                get => _isShown;
+                set
+                {
+                    if (_isShown == value) return;
+                    _isShown = value;
+                    OnPropertyChanged(nameof(IsShown));
+                    OnPropertyChanged(nameof(EyeGlyph));
+                    OnPropertyChanged(nameof(EyeToolTip));
+                }
+            }
+
+            /// <summary>Eye glyph (Segoe MDL2 Assets): RedEye when shown, Hide when hidden.</summary>
+            public string EyeGlyph => _isShown ? "\uE7B3" : "\uED1A";
+            public string EyeToolTip => _isShown
+                ? "Shown - click to hide this pattern's entries from the current view"
+                : "Hidden - click to show this pattern's entries again";
+
+            public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+            private void OnPropertyChanged(string n) =>
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(n));
+
+            /// <summary>
+            /// The level that most entries in this template carry ("INFO"/"WARN"/"ERROR"/"DEBUG"), or
+            /// "" if the template has no counted entries. Ties break by severity (ERROR &gt; WARN &gt;
+            /// INFO &gt; DEBUG) so a template with any errors reads as error-leaning. Handy for a compact
+            /// column and color-coding in the Patterns grid.
+            /// </summary>
+            public string DominantLevel
+            {
+                get
+                {
+                    if (Error == 0 && Warn == 0 && Info == 0 && Debug == 0) return "";
+                    // Highest count wins; severity breaks ties.
+                    int max = Math.Max(Math.Max(Info, Warn), Math.Max(Error, Debug));
+                    if (Error == max) return "ERROR";
+                    if (Warn == max) return "WARN";
+                    if (Info == max) return "INFO";
+                    return "DEBUG";
+                }
+            }
         }
 
         /// <summary>
@@ -821,6 +889,10 @@ namespace NuixLogReviewer.LogRepository
             public List<long> Ids = new List<long>();
             public long FirstTicks;
             public long LastTicks;
+            public int Info;
+            public int Warn;
+            public int Error;
+            public int Debug;
         }
 
         private readonly Dictionary<string, Bucket> _buckets = new Dictionary<string, Bucket>(4096);
@@ -828,6 +900,7 @@ namespace NuixLogReviewer.LogRepository
         private SortedDocValues _tmpl;
         private NumericDocValues _ts;
         private NumericDocValues _id;
+        private NumericDocValues _lvl;
 
         public void SetScorer(Scorer scorer) { }
 
@@ -836,6 +909,7 @@ namespace NuixLogReviewer.LogRepository
             _tmpl = context.AtomicReader.GetSortedDocValues("tmpl_dv");
             _ts = context.AtomicReader.GetNumericDocValues("ts_dv");
             _id = context.AtomicReader.GetNumericDocValues("id_dv");
+            _lvl = context.AtomicReader.GetNumericDocValues("lvl_dv");
         }
 
         public void Collect(int doc)
@@ -855,6 +929,16 @@ namespace NuixLogReviewer.LogRepository
             bucket.Ids.Add(id);
             if (ticks < bucket.FirstTicks) bucket.FirstTicks = ticks;
             if (ticks > bucket.LastTicks) bucket.LastTicks = ticks;
+
+            // Per-level tally from lvl_dv (0=INFO,1=WARN,2=ERROR,3=DEBUG,4=other). Near-zero extra cost
+            // since we already visit every matching doc here.
+            switch ((int)(_lvl?.Get(doc) ?? 4))
+            {
+                case 0: bucket.Info++; break;
+                case 1: bucket.Warn++; break;
+                case 2: bucket.Error++; break;
+                case 3: bucket.Debug++; break;
+            }
         }
 
         public bool AcceptsDocsOutOfOrder => true;
@@ -872,6 +956,10 @@ namespace NuixLogReviewer.LogRepository
                     FirstSeen = new DateTime(kv.Value.FirstTicks),
                     LastSeen = new DateTime(kv.Value.LastTicks),
                     Ids = kv.Value.Ids,
+                    Info = kv.Value.Info,
+                    Warn = kv.Value.Warn,
+                    Error = kv.Value.Error,
+                    Debug = kv.Value.Debug,
                 });
             }
             result.Sort((a, b) => b.Count.CompareTo(a.Count));

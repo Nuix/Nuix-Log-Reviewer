@@ -6,6 +6,10 @@
              xmlns:local="clr-namespace:NuixLogReviewer.GUI"
              mc:Ignorable="d" 
              d:DesignHeight="450" d:DesignWidth="800">
+    <UserControl.Resources>
+        <local:GapToBrushMultiConverter x:Key="GapToBrush"/>
+        <local:GapToTextConverter x:Key="GapToText"/>
+    </UserControl.Resources>
     <Grid>
         <DataGrid  Name="resultsGrid" Grid.Row="0" SelectedCellsChanged="resultsGrid_SelectedCellsChanged"
                   AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
@@ -25,6 +29,9 @@
                 <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas"/>
                 <DataGridTextColumn Header="Line" Binding="{Binding LineNumber}" FontFamily="Consolas"/>
                 <DataGridTextColumn Header="Time" Binding="{Binding TimeStamp, StringFormat=yyyy-MM-dd HH:mm:ss.fff}" FontFamily="Consolas"/>
+                <!-- Δ (gap to previous row in the current view). Visibility toggled from code-behind. -->
+                <DataGridTextColumn x:Name="colGap" Header="Δ" Binding="{Binding GapToPrevious, Converter={StaticResource GapToText}}"
+                                    FontFamily="Consolas" Visibility="Collapsed"/>
                 <!--<DataGridTextColumn Header="Channel" Binding="{Binding Channel}" FontFamily="Consolas"/>-->
                 <DataGridTextColumn Header="Level" Binding="{Binding Level}" FontFamily="Consolas"/>
                 <!--<DataGridTextColumn Header="Source" Binding="{Binding Source}" FontFamily="Consolas"/>-->
@@ -33,6 +40,24 @@
 
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
+                    <!-- Time-gap cue: color the row's TOP border by the gap to the previous row, so the
+                         line sits BETWEEN the two rows it separates (the gap value lives on the later
+                         row). A MultiBinding to the live threshold/floor makes it repaint when the scale
+                         changes; the converter returns transparent below the floor or when toggled off. -->
+                    <Setter Property="BorderThickness" Value="0,2,0,0"/>
+                    <Setter Property="BorderBrush">
+                        <Setter.Value>
+                            <MultiBinding Converter="{StaticResource GapToBrush}">
+                                <Binding Path="GapToPrevious"/>
+                                <Binding Path="HighlightThresholdSeconds"
+                                         Source="{x:Static local:GapVisualSettings.Instance}"/>
+                                <Binding Path="ShowGapBorder"
+                                         Source="{x:Static local:GapVisualSettings.Instance}"/>
+                                <Binding Path="FloorSeconds"
+                                         Source="{x:Static local:GapVisualSettings.Instance}"/>
+                            </MultiBinding>
+                        </Setter.Value>
+                    </Setter>
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding Level}" Value="ERROR">
                             <Setter Property="Background" Value="#3FFF0000"></Setter>

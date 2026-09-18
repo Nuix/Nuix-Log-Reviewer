@@ -400,6 +400,16 @@ namespace NuixLogReviewer
         {
             IsBusy = true;
             string baseQuery = txtSearchQuery.Text;
+
+            // History: unless this search IS a history restore, first stamp where we currently are onto
+            // the current history entry (so Back returns to this scroll position), then remember the
+            // destination to push once results land. Captured here at the top because the grid still
+            // holds the OUTGOING results (it's repopulated later in the dispatcher callback).
+            if (!_restoringHistory)
+            {
+                _history.UpdateCurrentPosition(captureViewState());
+            }
+
             // Hidden classifiers are a view filter: they're ANDed onto the running query (NOT flag:...),
             // but never written into the search box. Classifier counts + the "excluded" figure are
             // computed on the BASE query so hidden classifiers still show their real counts and can be
@@ -503,6 +513,18 @@ namespace NuixLogReviewer
                         {
                             resultsGrid.SelectAndScrollTo(selectEntryId.Value);
                         }
+
+                        // History: record this destination view (unless we're restoring one). The
+                        // position anchor is the pivot target if any, else whatever the grid lands on;
+                        // Push dedups same-view re-runs. Then refresh the Back/Forward enabled state.
+                        if (!_restoringHistory)
+                        {
+                            _history.Push(new ViewState(
+                                baseQuery,
+                                _hiddenFlags, _hiddenFiles, _hiddenTemplates,
+                                selectEntryId ?? resultsGrid.CurrentPositionEntryId));
+                        }
+                        updateHistoryButtons();
                     }));
                 }
                 catch (Exception exc)
@@ -614,14 +636,27 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
+        /// Session set of masked message templates currently hidden from the view (Patterns tab eye
+        /// toggles). Lower-cased comparison to match the indexed tmpl key. Not persisted across loads.
+        /// </summary>
+        private readonly HashSet<string> _hiddenTemplates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The "hide these patterns" clause: NOT (tmpl:"a" OR tmpl:"b" ...), or "" when none.</summary>
+        private string buildHiddenTemplateFilter()
+        {
+            return LogRepository.PatternQuery.HideClause(_hiddenTemplates);
+        }
+
+        /// <summary>
         /// The effective query the grid/chart/counts actually run: the user's query ANDed with the
-        /// hidden-classifier and hidden-file view filters. Both are view-only (never written to the
-        /// search box). Used by the search path and the timeline click lookup.
+        /// hidden-classifier, hidden-file, and hidden-pattern view filters. All are view-only (never
+        /// written to the search box). Used by the search path and the timeline click lookup.
         /// </summary>
         private string buildEffectiveQuery(string baseQuery)
         {
             string q = composeEffectiveQuery(baseQuery, buildHiddenFilter());
             q = composeEffectiveQuery(q, buildHiddenFileFilter());
+            q = composeEffectiveQuery(q, buildHiddenTemplateFilter());
             return q;
         }
 
@@ -631,6 +666,83 @@ namespace NuixLogReviewer
             if (string.IsNullOrWhiteSpace(hiddenFilter)) return baseQuery;
             if (string.IsNullOrWhiteSpace(baseQuery)) return hiddenFilter;
             return string.Format("({0}) AND {1}", baseQuery, hiddenFilter);
+        }
+
+        // ===================== Navigation history (Back/Forward) =====================
+
+        private readonly NavigationHistory _history = new NavigationHistory();
+        /// <summary>True while a Back/Forward restore is running, so performSearch doesn't re-push.</summary>
+        private bool _restoringHistory;
+
+        /// <summary>Snapshots the current view (query + session hidden-sets + grid position).</summary>
+        private ViewState captureViewState()
+        {
+            return new ViewState(
+                txtSearchQuery.Text,
+                _hiddenFlags, _hiddenFiles, _hiddenTemplates,
+                resultsGrid.CurrentPositionEntryId);
+        }
+
+        /// <summary>
+        /// Applies a <see cref="ViewState"/>: restores the query box and the session hidden-sets, re-runs
+        /// the search (guarded so it doesn't push a new history entry), and scrolls to the saved position.
+        /// Shared by Back and Forward.
+        /// </summary>
+        private void restoreViewState(ViewState vs)
+        {
+            if (vs == null) return;
+
+            _restoringHistory = true;
+            try
+            {
+                txtSearchQuery.Text = vs.BaseQuery ?? "";
+                _hiddenFlags.Clear(); foreach (var f in vs.HiddenFlags) _hiddenFlags.Add(f);
+                _hiddenFiles.Clear(); foreach (var f in vs.HiddenFiles) _hiddenFiles.Add(f);
+                _hiddenTemplates.Clear(); foreach (var t in vs.HiddenTemplates) _hiddenTemplates.Add(t);
+
+                performSearch(vs.PositionEntryId);
+            }
+            finally
+            {
+                _restoringHistory = false;
+            }
+            updateHistoryButtons();
+        }
+
+        /// <summary>Navigates back one step in view history.</summary>
+        private void btnHistoryBack_Click(object sender, RoutedEventArgs e)
+        {
+            // Stamp current position first so returning forward lands where we are now.
+            _history.UpdateCurrentPosition(captureViewState());
+            var vs = _history.Back();
+            if (vs != null) { restoreViewState(vs); }
+        }
+
+        /// <summary>Navigates forward one step in view history.</summary>
+        private void btnHistoryForward_Click(object sender, RoutedEventArgs e)
+        {
+            _history.UpdateCurrentPosition(captureViewState());
+            var vs = _history.Forward();
+            if (vs != null) { restoreViewState(vs); }
+        }
+
+        /// <summary>Enables/disables the Back/Forward buttons per the history pointer.</summary>
+        private void updateHistoryButtons()
+        {
+            if (btnHistoryBack != null) { btnHistoryBack.IsEnabled = _history.CanBack; }
+            if (btnHistoryForward != null) { btnHistoryForward.IsEnabled = _history.CanForward; }
+        }
+
+        /// <summary>Alt+Left / Alt+Right drive Back / Forward view history (browser-style).</summary>
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            // With Alt held, the actual key arrives via SystemKey.
+            if ((Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt)
+            {
+                var key = e.Key == Key.System ? e.SystemKey : e.Key;
+                if (key == Key.Left) { btnHistoryBack_Click(this, null); e.Handled = true; }
+                else if (key == Key.Right) { btnHistoryForward_Click(this, null); e.Handled = true; }
+            }
         }
 
         /// <summary>Updates the status-bar indicator for how many rows the hidden classifiers removed.</summary>
@@ -818,6 +930,68 @@ namespace NuixLogReviewer
         private IList<LogSearchIndex.LogPattern> _lastPatterns;
 
         /// <summary>
+        /// Toggles a pattern's shown/hidden state. Updates the session hidden-template set and re-runs
+        /// the main search so the grid/chart reflect it immediately - but does NOT recompute the
+        /// Patterns list (it's a snapshot); the row just flips its eye, and a stale hint appears since
+        /// the listed counts no longer match the filtered view. Recompute refreshes them.
+        /// </summary>
+        private void patternEyeToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (!((sender as FrameworkElement)?.Tag is LogSearchIndex.LogPattern p) || p.Template == null)
+            {
+                return;
+            }
+
+            string key = p.Template.ToLowerInvariant();
+            p.IsShown = !p.IsShown;
+            if (p.IsShown) { _hiddenTemplates.Remove(key); }
+            else { _hiddenTemplates.Add(key); }
+
+            setPatternsStale(true);   // listed counts are now as-of last Compute, not the live view
+            performSearch();          // grid/chart/counts update live via buildEffectiveQuery
+        }
+
+        /// <summary>
+        /// Shows every pattern again: clears the session hidden-template set, flips the listed rows'
+        /// eyes back on, and re-runs the search. Leaves the snapshot counts as-is (marks stale).
+        /// </summary>
+        private void btnShowAllPatterns_Click(object sender, RoutedEventArgs e)
+        {
+            bool changed = _hiddenTemplates.Count > 0;
+            _hiddenTemplates.Clear();
+            if (_lastPatterns != null)
+            {
+                foreach (var p in _lastPatterns) { if (!p.IsShown) p.IsShown = true; }
+            }
+            if (changed) { setPatternsStale(true); performSearch(); }
+        }
+
+        /// <summary>
+        /// Hides every currently-listed pattern from the view (adds all listed templates to the session
+        /// hidden set) and re-runs the search. The Patterns list stays a snapshot (rows grey, counts
+        /// as-computed); marks stale.
+        /// </summary>
+        private void btnHideAllPatterns_Click(object sender, RoutedEventArgs e)
+        {
+            if (_lastPatterns == null) { return; }
+
+            bool changed = false;
+            foreach (var p in _lastPatterns)
+            {
+                if (string.IsNullOrEmpty(p.Template)) { continue; }
+                if (p.IsShown) { p.IsShown = false; changed = true; }
+                _hiddenTemplates.Add(p.Template.ToLowerInvariant());
+            }
+            if (changed) { setPatternsStale(true); performSearch(); }
+        }
+
+        /// <summary>Shows/hides the "counts are from the last Compute" stale hint on the Patterns tab.</summary>
+        private void setPatternsStale(bool stale)
+        {
+            lblPatternsStale.Visibility = stale ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>
         /// Mines the current result set into message-template patterns and shows them in the Patterns
         /// tab. Runs off the UI thread (like search) with the busy overlay, since the full-set pass can
         /// take a few hundred milliseconds.
@@ -842,7 +1016,15 @@ namespace NuixLogReviewer
                     var patterns = repo.GetPatterns(query);
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        // Seed each pattern's eye state from the session hidden-set. Compute mines the
+                        // BASE query, so a hidden pattern still appears here (marked eye-off) - which is
+                        // what lets the user un-hide it after a recompute. Recompute clears "stale".
+                        foreach (var p in patterns)
+                        {
+                            p.IsShown = !_hiddenTemplates.Contains((p.Template ?? "").ToLowerInvariant());
+                        }
                         _lastPatterns = patterns;
+                        setPatternsStale(false);
                         applyPatternSort();
                         bottomTabs.SelectedItem = tabPatterns;
                         IsBusy = false;
@@ -890,6 +1072,24 @@ namespace NuixLogReviewer
                         ? _lastPatterns.OrderBy(p => p.Template, StringComparer.OrdinalIgnoreCase)
                         : _lastPatterns.OrderByDescending(p => p.Template, StringComparer.OrdinalIgnoreCase);
                     break;
+                case "Level":
+                    // Sort by dominant-level severity (ERROR>WARN>INFO>DEBUG>none), then by count.
+                    ordered = _patternSortAscending
+                        ? _lastPatterns.OrderBy(p => LevelSeverityRank(p.DominantLevel)).ThenBy(p => p.Count)
+                        : _lastPatterns.OrderByDescending(p => LevelSeverityRank(p.DominantLevel)).ThenByDescending(p => p.Count);
+                    break;
+                case "ERR":
+                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Error) : _lastPatterns.OrderByDescending(p => p.Error);
+                    break;
+                case "WARN":
+                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Warn) : _lastPatterns.OrderByDescending(p => p.Warn);
+                    break;
+                case "INFO":
+                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Info) : _lastPatterns.OrderByDescending(p => p.Info);
+                    break;
+                case "DBG":
+                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Debug) : _lastPatterns.OrderByDescending(p => p.Debug);
+                    break;
                 case "Count":
                 default:
                     ordered = _patternSortAscending
@@ -900,6 +1100,19 @@ namespace NuixLogReviewer
 
             patternList.ItemsSource = ordered.ToList();
             SyncPatternSortArrow();
+        }
+
+        /// <summary>Severity rank for dominant-level sorting: ERROR highest, empty lowest.</summary>
+        private static int LevelSeverityRank(string level)
+        {
+            switch (level)
+            {
+                case "ERROR": return 4;
+                case "WARN": return 3;
+                case "INFO": return 2;
+                case "DEBUG": return 1;
+                default: return 0;
+            }
         }
 
         /// <summary>
@@ -1035,11 +1248,11 @@ namespace NuixLogReviewer
             }
             else
             {
-                sb.AppendLine("Count\tFirst Seen\tLast Seen\tPattern");
+                sb.AppendLine("Count\tLevel\tERR\tWARN\tINFO\tDBG\tFirst Seen\tLast Seen\tPattern");
                 foreach (var p in rows)
                 {
-                    sb.AppendLine(string.Format("{0}\t{1:yyyy-MM-dd HH:mm:ss}\t{2:yyyy-MM-dd HH:mm:ss}\t{3}",
-                        p.Count, p.FirstSeen, p.LastSeen, p.Template));
+                    sb.AppendLine(string.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6:yyyy-MM-dd HH:mm:ss}\t{7:yyyy-MM-dd HH:mm:ss}\t{8}",
+                        p.Count, p.DominantLevel, p.Error, p.Warn, p.Info, p.Debug, p.FirstSeen, p.LastSeen, p.Template));
                 }
             }
 
