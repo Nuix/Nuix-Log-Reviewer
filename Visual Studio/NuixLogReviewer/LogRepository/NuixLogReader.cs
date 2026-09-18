@@ -87,7 +87,16 @@ namespace NuixLogReviewer.LogRepository
 
             int streamReaderBufferSize = 1024 * 1024 * 5;
 
-            using (StreamReader sr = new StreamReader(FilePath, Encoding.UTF8, false, streamReaderBufferSize))
+            // Open with FileShare.ReadWrite | Delete so we can read a log that an ACTIVE Nuix session is
+            // still writing to (and may rename/roll). Without write-sharing, StreamReader's default
+            // FileShare.Read throws/blocks on a live nuix.log. We read a snapshot of whatever bytes are
+            // present at open time ("load what's currently present"); later appends simply aren't seen.
+            FileStream fileStream = new FileStream(
+                FilePath, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                streamReaderBufferSize, FileOptions.SequentialScan);
+
+            using (StreamReader sr = new StreamReader(fileStream, Encoding.UTF8, false, streamReaderBufferSize))
             {
                 int lineNumber = 0;
                 string line = null;

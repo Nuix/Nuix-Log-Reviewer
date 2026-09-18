@@ -168,6 +168,14 @@ namespace NuixLogReviewer.LogRepository
                                 queue.Add(entry);
                             }
                         }
+                        catch (Exception ex)
+                        {
+                            // "Load what's present": one unreadable/locked/vanished file must not abort
+                            // the load or abandon the other files assigned to this worker. Skip it (its
+                            // queue is still completed in finally) and carry on with the next file.
+                            System.Diagnostics.Debug.WriteLine(
+                                $"Skipping unreadable log file '{files[fileIndex]}': {ex.Message}");
+                        }
                         finally
                         {
                             // Always close the queue so the coordinator never blocks forever on a file
@@ -302,9 +310,37 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
-        /// Within the given query's matched set, returns the id of the newest entry at or before the
-        /// given event time (ticks), or null if none. Used by the timeline click-to-scroll feature.
+        /// Analyzes the WHOLE loaded corpus ("of the logs loaded, here are threads to pull on"): builds
+        /// a frozen <see cref="Insights.InsightContext"/> from the existing whole-set summary passes and
+        /// runs the built-in insight detectors over it. Whole-set and blank-query (unaffected by the
+        /// view's hidden classifiers/files/patterns), computed on demand off the UI thread. Detector
+        /// queries are not validated here (built-ins are trusted); the caller can pass TryValidateQuery
+        /// for untrusted sources later. Returns findings grouped by source, most-severe first.
         /// </summary>
+        public IList<Insights.Insight> BuildInsights(int timelineBuckets = 200)
+        {
+            var summary = SearchIndex.SummarizeFilteredSet("");            // whole set
+            var jobs = SearchIndex.MineJobs("");
+            var patterns = SearchIndex.MinePatterns("");
+            var timeline = SearchIndex.BucketedLevelCounts("", timelineBuckets);
+            var fileDisplay = Database.FileDisplayNames();
+
+            var ctx = new Insights.InsightContext(summary, fileDisplay, jobs, patterns, timeline);
+
+            var thresholds = new Insights.InsightThresholds();
+            var engine = new Insights.InsightEngine(new Insights.IInsightDetector[]
+            {
+                new Insights.ErrorSpikeDetector(thresholds),
+                new Insights.ErrorDominantFileDetector(thresholds),
+                new Insights.JobFailureDetector(thresholds),
+                new Insights.PatternAnomalyDetector(thresholds),
+            });
+
+            // Built-in detectors produce trusted, compiler-built queries, but validate anyway so a bad
+            // one degrades gracefully (jump disabled) rather than erroring on click - cheap (parse only).
+            return engine.Run(ctx, q => SearchIndex.TryValidateQuery(q));
+        }
+
         public long? FindEntryIdAtOrBefore(string query, long ticks)
         {
             return SearchIndex.FindEntryIdAtOrBefore(query, ticks);

@@ -467,6 +467,25 @@ namespace NuixLogReviewer.LogRepository
             };
         }
 
+        /// <summary>
+        /// Validates a query string by attempting to parse it (does NOT execute). Returns whether it
+        /// parsed and, if not, the parser's message. Used to vet detector/script-supplied insight
+        /// queries so a bad one disables its "jump" rather than throwing when clicked. Cheap: parse only.
+        /// </summary>
+        public (bool ok, string error) TryValidateQuery(string queryString)
+        {
+            if (string.IsNullOrWhiteSpace(queryString)) { return (true, null); }
+            try
+            {
+                ParseQuery(NotFixRegex.Replace(queryString, "NOT"));
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                return (false, ex.Message);
+            }
+        }
+
         private Query ParseQuery(string queryString)
         {
             // Queries that reference the virtual "age" field depend on ReferenceTicks (which varies

@@ -487,6 +487,47 @@
                     </ListView>
                 </Grid>
             </TabItem>
+            <TabItem Header="Insights" x:Name="tabInsights">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" LastChildFill="False" Margin="2">
+                        <Button x:Name="btnAnalyzeInsights" DockPanel.Dock="Left" Content="Analyze" Padding="6,2"
+                                Click="btnAnalyzeInsights_Click"
+                                ToolTip="Scan the whole loaded corpus for notable things worth looking into. Double-click a finding to jump to it."/>
+                        <TextBlock x:Name="lblInsightsInfo" DockPanel.Dock="Right" VerticalAlignment="Center"
+                                   Margin="0,0,4,0" Foreground="{StaticResource Brush.TextMuted}"/>
+                    </DockPanel>
+                    <ListView x:Name="insightList" Grid.Row="1" MouseDoubleClick="insightList_MouseDoubleClick"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="ToolTip" Value="{Binding Query}"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.GroupStyle>
+                            <GroupStyle>
+                                <GroupStyle.HeaderTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource Brush.TextMuted}" Margin="2,6,0,2"/>
+                                    </DataTemplate>
+                                </GroupStyle.HeaderTemplate>
+                            </GroupStyle>
+                        </ListView.GroupStyle>
+                        <ListView.View>
+                            <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
+                                <GridViewColumn Header="Severity" DisplayMemberBinding="{Binding Severity}" Width="80"/>
+                                <GridViewColumn Header="Finding" DisplayMemberBinding="{Binding Title}" Width="300"/>
+                                <GridViewColumn Header="Detail" DisplayMemberBinding="{Binding Detail}" Width="640"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </Grid>
+            </TabItem>
         </TabControl>
         <Border Name="busyOverlay" Visibility="Collapsed" Grid.Row="0" Grid.RowSpan="4">
             <Border.Background>

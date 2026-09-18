@@ -1010,6 +1010,87 @@ namespace NuixLogReviewer
             repo.DisposeRepo();
         }
 
+        // ===================== Insights tab =====================
+
+        /// <summary>
+        /// Scans the whole loaded corpus for notable findings ("threads to pull on") off the UI thread,
+        /// then lists them grouped by their source detector. Whole-set analysis, so it's independent of
+        /// the current search/hidden view.
+        /// </summary>
+        private void btnAnalyzeInsights_Click(object sender, RoutedEventArgs e)
+        {
+            if (repo.Database.TotalRecords < 1)
+            {
+                MessageBox.Show("Please load some log files first.");
+                return;
+            }
+
+            IsBusy = true;
+            lblStatus.Text = "Analyzing the loaded logs for insights...";
+            lblProgress.Text = "";
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var findings = repo.BuildInsights();
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        // Group by source in the ListView (matches the grouped GroupStyle in XAML).
+                        var view = System.Windows.Data.CollectionViewSource.GetDefaultView(findings);
+                        view.GroupDescriptions.Clear();
+                        view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription("Source"));
+                        insightList.ItemsSource = findings;
+
+                        int actionable = findings.Count(f => f.HasQuery && f.QueryValid);
+                        lblInsightsInfo.Text = findings.Count == 0
+                            ? "No notable findings."
+                            : string.Format("{0} finding{1} · {2} with a jump-to query",
+                                findings.Count, findings.Count == 1 ? "" : "s", actionable);
+                        bottomTabs.SelectedItem = tabInsights;
+                        IsBusy = false;
+                    }));
+                }
+                catch (Exception exc)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        IsBusy = false;
+                        MessageBox.Show(exc.Message);
+                    }));
+                }
+            });
+        }
+
+        /// <summary>
+        /// Double-clicking a finding "pulls the thread": runs its query (honing the view onto the
+        /// evidence) and, if it carries a position, scrolls there. Findings with an invalid query show a
+        /// message instead of running it (fail-soft, mainly for future scripted detectors).
+        /// </summary>
+        private void insightList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (!(insightList.SelectedItem is LogRepository.Insights.Insight insight)) { return; }
+
+            if (insight.HasQuery && !insight.QueryValid)
+            {
+                MessageBox.Show("This finding's query could not be parsed:\n\n" + (insight.QueryError ?? "unknown error"),
+                    "Invalid query", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (insight.HasQuery)
+            {
+                // Set the search box to the finding's query and run it through the normal search path
+                // (which applies view-filters, history, cancellation, etc.).
+                txtSearchQuery.Text = insight.Query;
+                performSearch(insight.PositionEntryId);
+            }
+            else if (insight.PositionEntryId.HasValue)
+            {
+                resultsGrid.SelectAndScrollTo(insight.PositionEntryId.Value);
+            }
+        }
+
         /// <summary>
         /// When user double clicks a classifier row, drill the search down to that flag.
         /// </summary>
