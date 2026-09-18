@@ -113,6 +113,64 @@ namespace NuixLogReviewer.LogRepository
             return _searcher;
         }
 
+        /// <summary>
+        /// Runs a search that can be cancelled mid-scan: wraps the collector so it checks the token
+        /// periodically and throws <see cref="OperationCanceledException"/> to unwind the Lucene scan.
+        /// This is what lets a pathological/expensive query (e.g. an accidental huge range) be stopped
+        /// by the Cancel button rather than running to completion. A default/none token is a no-op wrap.
+        /// </summary>
+        private static void SearchCancellable(IndexSearcher searcher, Query query, ICollector collector,
+            System.Threading.CancellationToken cancel)
+        {
+            if (cancel.CanBeCanceled)
+            {
+                searcher.Search(query, new CancellableCollector(collector, cancel));
+            }
+            else
+            {
+                searcher.Search(query, collector);
+            }
+        }
+
+        /// <summary>
+        /// Collector decorator that throws <see cref="OperationCanceledException"/> when a cancellation
+        /// token trips. Checks every N documents (cheap) plus on each new segment, so a long scan stops
+        /// promptly without adding meaningful per-doc overhead.
+        /// </summary>
+        private sealed class CancellableCollector : ICollector
+        {
+            private const int CheckEvery = 4096;
+            private readonly ICollector _inner;
+            private readonly System.Threading.CancellationToken _cancel;
+            private int _since;
+
+            public CancellableCollector(ICollector inner, System.Threading.CancellationToken cancel)
+            {
+                _inner = inner;
+                _cancel = cancel;
+            }
+
+            public void SetScorer(Scorer scorer) => _inner.SetScorer(scorer);
+
+            public void SetNextReader(AtomicReaderContext context)
+            {
+                _cancel.ThrowIfCancellationRequested();
+                _inner.SetNextReader(context);
+            }
+
+            public void Collect(int doc)
+            {
+                if (++_since >= CheckEvery)
+                {
+                    _since = 0;
+                    _cancel.ThrowIfCancellationRequested();
+                }
+                _inner.Collect(doc);
+            }
+
+            public bool AcceptsDocsOutOfOrder => _inner.AcceptsDocsOutOfOrder;
+        }
+
         public void BeginWrite()
         {
             lock (_lockObject)
@@ -340,24 +398,25 @@ namespace NuixLogReviewer.LogRepository
         /// the query string. When there are no hidden templates and the base query is blank, uses the
         /// same time-sorted GetAllIds fast path as <see cref="Search(NuixLogRepo,string)"/>.
         /// </summary>
-        public IList<long> Search(NuixLogRepo repo, string baseQuery, IReadOnlyCollection<string> hiddenTemplates)
+        public IList<long> Search(NuixLogRepo repo, string baseQuery, IReadOnlyCollection<string> hiddenTemplates,
+            System.Threading.CancellationToken cancel = default)
         {
             if ((hiddenTemplates == null || hiddenTemplates.Count == 0) && string.IsNullOrWhiteSpace(baseQuery))
             {
                 return repo.Database.GetAllIds();
             }
-            return SearchIds(ComposeFilteredQuery(baseQuery, hiddenTemplates));
+            return SearchIds(ComposeFilteredQuery(baseQuery, hiddenTemplates), cancel);
         }
 
         /// <summary>
         /// Collects matching ids for a prepared query via a doc-values scan (id_dv/ts_dv/line_dv),
         /// ordered by (timestamp asc, line asc). No stored-field retrieval, no result cap.
         /// </summary>
-        private IList<long> SearchIds(Query query)
+        private IList<long> SearchIds(Query query, System.Threading.CancellationToken cancel = default)
         {
             var searcher = GetSearcher();
             var collector = new IdSortCollector();
-            searcher.Search(query, collector);
+            SearchCancellable(searcher, query, collector, cancel);
             return collector.SortedIds();
         }
 
@@ -500,7 +559,7 @@ namespace NuixLogReviewer.LogRepository
         /// blank "clear search". Reads lvl_dv/ts_dv (and the multi-valued flag_dv) only, so it scales
         /// with the match count, not the number of flags. A blank query covers the whole loaded set.
         /// </summary>
-        public FilteredSetSummary SummarizeFilteredSet(string queryString)
+        public FilteredSetSummary SummarizeFilteredSet(string queryString, System.Threading.CancellationToken cancel = default)
         {
             Query query;
             if (string.IsNullOrWhiteSpace(queryString))
@@ -512,19 +571,20 @@ namespace NuixLogReviewer.LogRepository
                 queryString = NotFixRegex.Replace(queryString, "NOT");
                 query = ParseQuery(queryString);
             }
-            return SummarizeQuery(query);
+            return SummarizeQuery(query, cancel);
         }
 
         /// <summary>
         /// Summary variant applying hidden templates as a fast FieldCacheTermsFilter MUST_NOT
         /// (see <see cref="ComposeFilteredQuery"/>) instead of an OR'd phrase negation.
         /// </summary>
-        public FilteredSetSummary SummarizeFilteredSet(string baseQuery, IReadOnlyCollection<string> hiddenTemplates)
+        public FilteredSetSummary SummarizeFilteredSet(string baseQuery, IReadOnlyCollection<string> hiddenTemplates,
+            System.Threading.CancellationToken cancel = default)
         {
-            return SummarizeQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates));
+            return SummarizeQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates), cancel);
         }
 
-        private FilteredSetSummary SummarizeQuery(Query query)
+        private FilteredSetSummary SummarizeQuery(Query query, System.Threading.CancellationToken cancel = default)
         {
             var summary = new FilteredSetSummary();
             var searcher = GetSearcher();
@@ -534,7 +594,7 @@ namespace NuixLogReviewer.LogRepository
             }
 
             var collector = new FilteredSetSummaryCollector(summary);
-            searcher.Search(query, collector);
+            SearchCancellable(searcher, query, collector, cancel);
             return summary;
         }
 
@@ -680,12 +740,13 @@ namespace NuixLogReviewer.LogRepository
         /// Chart variant applying hidden templates as a fast FieldCacheTermsFilter MUST_NOT
         /// (see <see cref="ComposeFilteredQuery"/>) instead of an OR'd phrase negation.
         /// </summary>
-        public TimeSeries BucketedLevelCounts(string baseQuery, IReadOnlyCollection<string> hiddenTemplates, int buckets)
+        public TimeSeries BucketedLevelCounts(string baseQuery, IReadOnlyCollection<string> hiddenTemplates, int buckets,
+            System.Threading.CancellationToken cancel = default)
         {
-            return BucketedLevelCountsForQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates), buckets);
+            return BucketedLevelCountsForQuery(ComposeFilteredQuery(baseQuery, hiddenTemplates), buckets, cancel);
         }
 
-        private TimeSeries BucketedLevelCountsForQuery(Query query, int buckets)
+        private TimeSeries BucketedLevelCountsForQuery(Query query, int buckets, System.Threading.CancellationToken cancel = default)
         {
             if (buckets < 1) buckets = 1;
 
@@ -702,7 +763,7 @@ namespace NuixLogReviewer.LogRepository
             long span = Math.Max(1, max.Value - min.Value);
             var counts = new int[buckets, 3];
             var collector = new LevelBucketCollector(min.Value, span, buckets, counts);
-            searcher.Search(query, collector);
+            SearchCancellable(searcher, query, collector, cancel);
 
             return new TimeSeries { Counts = counts, Buckets = buckets, MinTicks = min, MaxTicks = max };
         }

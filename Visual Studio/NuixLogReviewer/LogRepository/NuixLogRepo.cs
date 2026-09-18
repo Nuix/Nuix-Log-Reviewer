@@ -325,9 +325,9 @@ namespace NuixLogReviewer.LogRepository
         /// set. Used to compute classifier counts on the unfiltered-by-visibility set and the
         /// "N rows excluded by classifiers" figure, independent of the effective (hidden-filtered) query.
         /// </summary>
-        public LogSearchIndex.FilteredSetSummary Summarize(string query)
+        public LogSearchIndex.FilteredSetSummary Summarize(string query, System.Threading.CancellationToken cancel = default)
         {
-            return SearchIndex.SummarizeFilteredSet(query);
+            return SearchIndex.SummarizeFilteredSet(query, cancel);
         }
 
         /// <summary>
@@ -373,16 +373,17 @@ namespace NuixLogReviewer.LogRepository
         /// </summary>
         public LogEntrySearchResponse SearchWithHiddenTemplates(
             string query, IReadOnlyCollection<string> hiddenTemplates,
-            LogSearchIndex.FilteredSetSummary reuseSummary)
+            LogSearchIndex.FilteredSetSummary reuseSummary,
+            System.Threading.CancellationToken cancel = default)
         {
-            IList<long> ids = SearchIndex.Search(this, query, hiddenTemplates);
+            IList<long> ids = SearchIndex.Search(this, query, hiddenTemplates, cancel);
             LogEntrySearchResponse result = new LogEntrySearchResponse(new NuixLogEntryItemProvider()
             {
                 Ids = ids,
                 SourceRepository = this
             }, 1000);
 
-            var summary = reuseSummary ?? SearchIndex.SummarizeFilteredSet(query, hiddenTemplates);
+            var summary = reuseSummary ?? SearchIndex.SummarizeFilteredSet(query, hiddenTemplates, cancel);
             result.InfoEntryCount = summary.Info;
             result.WarnEntryCount = summary.Warn;
             result.ErrorEntryCount = summary.Error;
@@ -395,9 +396,10 @@ namespace NuixLogReviewer.LogRepository
 
         /// <summary>Time-series for a base query with hidden PATTERN templates applied via the filter path.</summary>
         public LogSearchIndex.TimeSeries GetTimeSeriesWithHiddenTemplates(
-            string query, IReadOnlyCollection<string> hiddenTemplates, int buckets)
+            string query, IReadOnlyCollection<string> hiddenTemplates, int buckets,
+            System.Threading.CancellationToken cancel = default)
         {
-            return SearchIndex.BucketedLevelCounts(query, hiddenTemplates, buckets);
+            return SearchIndex.BucketedLevelCounts(query, hiddenTemplates, buckets, cancel);
         }
 
         /// <summary>

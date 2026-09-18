@@ -511,8 +511,14 @@
                     </Border>
                     <TextBlock Name="lblStatus" Grid.Row="1" FontSize="13" Margin="14,10,14,4" TextWrapping="Wrap"
                                Foreground="{StaticResource Brush.Text}"/>
-                    <TextBlock Name="lblProgress" Grid.Row="2" FontSize="13" Margin="14,0,14,4"
-                               Foreground="{StaticResource Brush.TextMuted}"/>
+                    <Grid Grid.Row="2" Margin="14,0,14,4">
+                        <TextBlock Name="lblProgress" FontSize="13" VerticalAlignment="Top"
+                                   Foreground="{StaticResource Brush.TextMuted}"/>
+                        <Button Name="btnCancelBusy" Content="Cancel" Click="btnCancelBusy_Click"
+                                Visibility="Collapsed" Padding="14,4" MinWidth="90"
+                                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                ToolTip="Stop the current operation and return to the previous view."/>
+                    </Grid>
                     <ProgressBar Grid.Row="3" IsIndeterminate="True" Height="4" Margin="0"
                                  Background="{StaticResource Brush.SurfaceAlt}" BorderThickness="0"
                                  Foreground="{StaticResource Brush.Brand}"/>

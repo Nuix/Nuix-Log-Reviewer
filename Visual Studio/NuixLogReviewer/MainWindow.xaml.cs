@@ -43,8 +43,47 @@ namespace NuixLogReviewer
                 isBusy = value;
 
                 if (value == true) { busyOverlay.Visibility = Visibility.Visible; }
-                else { busyOverlay.Visibility = Visibility.Collapsed; }
+                else
+                {
+                    busyOverlay.Visibility = Visibility.Collapsed;
+                    // The cancel affordance is per-operation; always hide it when the overlay closes.
+                    btnCancelBusy.Visibility = Visibility.Collapsed;
+                }
             }
+        }
+
+        // ===================== Cancellable search =====================
+
+        /// <summary>Cancellation source for the in-flight search, if any. Replaced on each new search.</summary>
+        private System.Threading.CancellationTokenSource _searchCts;
+
+        /// <summary>
+        /// Monotonic search id. Incremented per search so a late-finishing (or cancelled) search can tell
+        /// it's stale and skip applying its results, even if cancellation didn't halt it in time.
+        /// </summary>
+        private int _searchGeneration;
+
+        /// <summary>Shows the busy overlay for a cancellable operation (reveals the Cancel button).</summary>
+        private void BeginCancellableBusy(string status)
+        {
+            lblStatus.Text = status;
+            lblProgress.Text = "";
+            btnCancelBusy.Visibility = Visibility.Visible;
+            btnCancelBusy.IsEnabled = true;
+            IsBusy = true;
+        }
+
+        /// <summary>Cancel button on the busy overlay: signal cancellation and unblock the UI at once.</summary>
+        private void btnCancelBusy_Click(object sender, RoutedEventArgs e)
+        {
+            // Signal the running query to stop (cooperative), bump the generation so its results are
+            // discarded even if it finishes anyway, and hide the overlay immediately so the user is not
+            // stuck. The background task's finally-block is a no-op for a stale generation.
+            _searchGeneration++;
+            try { _searchCts?.Cancel(); } catch { /* already disposed */ }
+            lblStatus.Text = "Cancelling…";
+            btnCancelBusy.IsEnabled = false;
+            IsBusy = false;
         }
 
         public MainWindow()
@@ -413,7 +452,14 @@ namespace NuixLogReviewer
         /// </param>
         private void performSearch(long? selectEntryId = null)
         {
-            IsBusy = true;
+            // Set up cancellation for this search: cancel any prior in-flight search, start a fresh token
+            // and bump the generation so a stale search's results are discarded on arrival.
+            try { _searchCts?.Cancel(); } catch { }
+            var cts = new System.Threading.CancellationTokenSource();
+            _searchCts = cts;
+            int generation = ++_searchGeneration;
+            var cancelToken = cts.Token;
+
             string baseQuery = txtSearchQuery.Text;
 
             // History: unless this search IS a history restore, first stamp where we currently are onto
@@ -438,8 +484,7 @@ namespace NuixLogReviewer
 
             logEntryViewer.Clear();
             levelChart.ShowPlaceholder("Charting...");
-            lblStatus.Text = "Executing search:\n" + baseQuery;
-            lblProgress.Text = "";
+            BeginCancellableBusy("Executing search:\n" + baseQuery);
 
             Task searchTask = new Task(() =>
             {
@@ -459,7 +504,8 @@ namespace NuixLogReviewer
                     // so hidden classifiers still report their true counts. Computed first so it can be
                     // REUSED as the effective-set summary when nothing is hidden (the common case),
                     // saving a whole-index scan - see the reuse arg below.
-                    var baseSummary = repo.Summarize(baseQuery);
+                    cancelToken.ThrowIfCancellationRequested();
+                    var baseSummary = repo.Summarize(baseQuery, cancelToken);
 
                     // When NO view-filters are active (no hidden flags/files/templates) the effective
                     // query IS the base query, so the grid's summary equals baseSummary; reuse it to
@@ -469,20 +515,24 @@ namespace NuixLogReviewer
 
                     // Effective (hidden-filtered) set drives the grid, level readouts, range and chart.
                     // Hidden patterns go through the fast FieldCacheTermsFilter path.
+                    cancelToken.ThrowIfCancellationRequested();
                     LogEntrySearchResponse hits = repo.SearchWithHiddenTemplates(
-                        effectiveQuery, hiddenTemplates, sameAsBase ? baseSummary : null);
+                        effectiveQuery, hiddenTemplates, sameAsBase ? baseSummary : null, cancelToken);
                     // Chart resolution scales with the chart's rendered width (see LevelTimeChart);
                     // remember how to re-fetch this series so a resize can re-bucket it.
                     int chartBuckets = levelChart.CurrentDesiredBucketCount;
                     string chartQuery = effectiveQuery;
                     var chartHidden = hiddenTemplates;
                     _chartSource = n => repo.GetTimeSeriesWithHiddenTemplates(chartQuery, chartHidden, n);
-                    var series = repo.GetTimeSeriesWithHiddenTemplates(effectiveQuery, hiddenTemplates, chartBuckets);
+                    cancelToken.ThrowIfCancellationRequested();
+                    var series = repo.GetTimeSeriesWithHiddenTemplates(effectiveQuery, hiddenTemplates, chartBuckets, cancelToken);
 
                     int excluded = Math.Max(0, baseSummary.Total - hits.Count);
 
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        // Discard results from a search that has since been superseded or cancelled.
+                        if (generation != _searchGeneration) { return; }
                         lblRecordCounts.Content = String.Format("{0} / {1}", hits.Count.ToString("###,###,##0"), repo.Database.TotalRecords.ToString("###,###,##0"));
 
                         lblInfoCount.Content = hits.InfoEntryCount.ToString("###,###,##0");
@@ -559,16 +609,29 @@ namespace NuixLogReviewer
                         updateHistoryButtons();
                     }));
                 }
+                catch (OperationCanceledException)
+                {
+                    // Search was cancelled (Cancel button or superseded). The UI was already unblocked
+                    // by the cancel handler; nothing to apply.
+                }
                 catch (Exception exc)
                 {
-                    MessageBox.Show(exc.Message);
+                    // Only surface errors for the still-current search; stale failures are irrelevant.
+                    if (generation == _searchGeneration)
+                    {
+                        Dispatcher.BeginInvoke(new Action(() => MessageBox.Show(exc.Message)));
+                    }
                 }
                 finally
                 {
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        IsBusy = false;
+                        // Only the current search clears the overlay - a stale/cancelled search must not
+                        // hide the overlay of a newer search that's already running.
+                        if (generation == _searchGeneration) { IsBusy = false; }
                     }));
+                    if (ReferenceEquals(_searchCts, cts)) { _searchCts = null; }
+                    cts.Dispose();
                 }
             });
             searchTask.Start();
