@@ -26,7 +26,15 @@
             </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <!-- <DataGridTextColumn Header="ID" Binding="{Binding ID}" FontFamily="Consolas"/> -->
-                <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas"/>
+                <!-- File shows the shortest-unique path tail (matching the Files tab); the full path is
+                     the tooltip. -->
+                <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="ToolTip" Value="{Binding FilePath}"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="Line" Binding="{Binding LineNumber}" FontFamily="Consolas"/>
                 <DataGridTextColumn Header="Time" Binding="{Binding TimeStamp, StringFormat=yyyy-MM-dd HH:mm:ss.fff}" FontFamily="Consolas"/>
                 <!-- Δ (gap to previous row in the current view). Visibility toggled from code-behind. -->

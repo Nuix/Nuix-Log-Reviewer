@@ -240,7 +240,7 @@
                 </Label>
                 <Separator x:Name="sepExcluded" Visibility="Collapsed"/>
                 <Label Name="lblExcluded" Visibility="Collapsed" Foreground="{StaticResource Brush.TextMuted}">
-                    <Label.ToolTip>Rows removed from the current view by hidden classifiers (Classifiers tab eye toggles).</Label.ToolTip>
+                    <Label.ToolTip>Rows removed from the current view by the active view-filters: hidden classifiers, hidden files, and hidden patterns (the eye toggles on the Classifiers, Files, and Patterns tabs).</Label.ToolTip>
                 </Label>
             </StatusBar>
         </Grid>

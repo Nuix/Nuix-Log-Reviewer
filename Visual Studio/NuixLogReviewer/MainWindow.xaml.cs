@@ -772,12 +772,17 @@ namespace NuixLogReviewer
             }
         }
 
-        /// <summary>Updates the status-bar indicator for how many rows the hidden classifiers removed.</summary>
+        /// <summary>
+        /// Updates the status-bar indicator for how many rows the active view-filters removed. The count
+        /// is base-set total minus the effective (filtered) hit count, so it spans ALL view-filters:
+        /// hidden classifiers, hidden files, and hidden patterns - hence "hidden by filters", not just
+        /// classifiers.
+        /// </summary>
         private void updateExcludedIndicator(int excluded)
         {
             if (excluded > 0)
             {
-                lblExcluded.Content = string.Format("{0:N0} hidden by classifiers", excluded);
+                lblExcluded.Content = string.Format("{0:N0} hidden by filters", excluded);
                 lblExcluded.Visibility = Visibility.Visible;
                 sepExcluded.Visibility = Visibility.Visible;
             }

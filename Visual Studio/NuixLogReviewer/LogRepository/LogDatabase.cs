@@ -15,6 +15,32 @@ namespace NuixLogReviewer.LogRepository
         private Dictionary<string, long> sourceIdCache = new Dictionary<string, long>();
         private Dictionary<string, long> channelIdCache = new Dictionary<string, long>();
 
+        // Full path => shortest-unique display tail (same scheme as the Files tab), so the grid's File
+        // column shows a meaningful disambiguated name (e.g. "worker3/nuix.log") instead of an opaque
+        // "nuix.log(42)". Built lazily from the distinct loaded paths; rebuilt if the file set grows.
+        private Dictionary<string, string> _fileDisplayNames;
+        private int _fileDisplayNamesBuiltForCount = -1;
+
+        /// <summary>
+        /// Returns (building if needed) the full-path =&gt; short-unique-tail display map across all
+        /// distinct loaded file paths (read from the FileName lookup table, the source of truth). Uses
+        /// the same <see cref="FileDisplay.ShortUniqueNames"/> scheme as the Files tab so the grid's File
+        /// column matches it. Rebuilt only when the number of distinct files changes (a small set).
+        /// </summary>
+        public IReadOnlyDictionary<string, string> FileDisplayNames()
+        {
+            int fileCount = (int)ExecuteScalar<long>("SELECT COUNT(*) FROM FileName");
+            if (_fileDisplayNames == null || _fileDisplayNamesBuiltForCount != fileCount)
+            {
+                var paths = ExecuteReader<string>(
+                    "SELECT Value FROM FileName",
+                    r => r["Value"].ToString()).ToList();
+                _fileDisplayNames = FileDisplay.ShortUniqueNames(paths);
+                _fileDisplayNamesBuiltForCount = fileCount;
+            }
+            return _fileDisplayNames;
+        }
+
         public object Database { get; private set; }
 
         public LogDatabase(string dataSource) : base(dataSource)
@@ -206,15 +232,23 @@ namespace NuixLogReviewer.LogRepository
                 query = String.Format(query, idlist);
             }
 
+            // Resolve the shared short-unique display-name map once (built lazily, cached), so the grid's
+            // File column shows the same disambiguated tail as the Files tab (e.g. "worker3/nuix.log")
+            // rather than "nuix.log(42)".
+            var display = FileDisplayNames();
+
             return ExecuteReader<NuixLogEntry>(query, new Func<SQLiteDataReader, NuixLogEntry>(reader =>
             {
                 string content = reader["Content"] as string;
+                string filePath = reader["FileName"].ToString();
                 NuixLogEntry entry = new NuixLogEntry()
                 {
                     ID = (long)reader["ID"],
                     LineNumber = (int)(long)reader["LineNumber"],
-                    FilePath = reader["FileName"].ToString(),
-                    FileName = Path.GetFileName(reader["FileName"].ToString()) + "(" + ((long)reader["FileID"]).ToString() + ")",
+                    FilePath = filePath,
+                    FileName = display.TryGetValue(filePath, out var shortName)
+                        ? shortName
+                        : Path.GetFileName(filePath),
                     TimeStamp = DateTime.FromFileTime((long)reader["TimeStamp"]),
                     Channel = reader["Channel"].ToString(),
                     Elapsed = TimeSpan.FromMilliseconds((long)reader["Elapsed"]),
