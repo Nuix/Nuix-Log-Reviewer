@@ -87,62 +87,87 @@ namespace NuixLogReviewer.GUI
         {
             CurrentLogEntries = entries;
             resultsGrid.ItemsSource = entries;
+            // A new result set invalidates any prior Find matches; the caller re-runs the find if wanted.
+            _findMatchIds = null;
+            colFindMatch.Visibility = Visibility.Collapsed;
             // Report the initial visible window once layout settles.
             Dispatcher.BeginInvoke(new Action(ReportVisibleRange), System.Windows.Threading.DispatcherPriority.Loaded);
         }
 
         /// <summary>
-        /// Selects the row for the entry with the given id and scrolls it into view. Used after a
-        /// "pivot around event" search so the entry the user pivoted on is highlighted and centered in
-        /// the freshly loaded context. No-op if the id isn't in the current result set.
+        /// The current result set's time-ordered entry-id list (the same ordinal order as the grid
+        /// rows), or null if unavailable. Exposed so the Find engine can stream ids -> rows without
+        /// forcing the virtualizing collection to materialize every page as objects.
+        /// </summary>
+        public IList<long> CurrentOrderedIds
+        {
+            get
+            {
+                if (!(CurrentLogEntries is LogRepository.LogEntrySearchResponse response)) { return null; }
+                if (!(response.ItemsProvider is NuixLogReviewerObjects.NuixLogEntryItemProvider provider)) { return null; }
+                return provider.Ids;
+            }
+        }
+
+        /// <summary>
+        /// Selects the row for the entry with the given id and scrolls it into view. Used by "pivot
+        /// around event", history restore, and Find next/prev. No-op if the id isn't in the current set.
         /// </summary>
         /// <remarks>
-        /// The results are a data-virtualized collection whose own IndexOf/Contains are intentionally
-        /// unimplemented (they return -1/false), so we can't let the DataGrid resolve the item itself.
-        /// Instead we find the id's ordinal position in the response's ordered id list, materialize that
-        /// row through the collection indexer, then select and scroll to it. Deferred to Loaded priority
-        /// so the ItemsSource change has been applied and containers can be realized.
+        /// The results are a data-virtualized collection whose IndexOf/Contains are intentionally
+        /// unimplemented (return -1/false). That means the DataGrid CANNOT resolve a programmatic
+        /// <c>SelectedItem = item</c> (it calls Items.IndexOf internally, gets -1, and the selection
+        /// silently no-ops - which is why the detail view never reacted). So we drive selection through
+        /// the row CONTAINER instead: resolve the id's ordinal, scroll that index into view by OFFSET
+        /// (CenterRow - also IndexOf-free), let layout realize the container, then set
+        /// <see cref="DataGridRow.IsSelected"/> on it. Setting IsSelected on the container updates the
+        /// grid's real selection and raises SelectedCellsChanged, which the detail view listens to.
         /// </remarks>
         public void SelectAndScrollTo(long id)
         {
+            int index = IndexOfEntryId(id);
+            if (index < 0) { return; }
+
+            var entries = CurrentLogEntries;
+            if (entries == null || index >= entries.Count) { return; }
+
+            // Scroll the target index into view by OFFSET (no IndexOf needed), then select its container
+            // once realized. Deferred so any pending ItemsSource change is applied first.
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                int index = IndexOfEntryId(id);
-                if (index < 0) { return; }
-
-                var entries = CurrentLogEntries;
-                if (entries == null || index >= entries.Count) { return; }
-
-                // Materialize the row object via the virtualizing collection indexer.
-                NuixLogEntry entry = entries[index];
-                if (entry == null) { return; }
-
-                resultsGrid.SelectedItem = entry;
-                resultsGrid.ScrollIntoView(entry);
-                resultsGrid.UpdateLayout();
-                // Best-effort center within the viewport. With variable-height rows this offset is only
-                // an estimate under item-scrolling, so it may not land exactly.
                 CenterRow(index, entries.Count);
                 resultsGrid.UpdateLayout();
-                // Safety net: ScrollIntoView is WPF's reliable "bring this item on screen" primitive.
-                // Running it AFTER the centering nudge guarantees the target row is actually visible even
-                // when the centering estimate was off (the common cause of "scrolled near but not to" the
-                // clicked location). If centering already made it visible this is a no-op; otherwise it
-                // scrolls the minimum needed to reveal it.
-                resultsGrid.ScrollIntoView(entry);
-                ReportVisibleRange();
-
-                // Bring keyboard focus onto the selected row's container so the selection reads as the
-                // active (not just logical) selection and arrow-key navigation continues from here.
-                // Deferred again so the container exists after the centering scroll realizes it.
-                Dispatcher.BeginInvoke(new Action(() =>
+                // After the centering scroll + layout, the container at this index should be realized.
+                // Try to select it; if it isn't realized yet (async page fetch), retry once at a lower
+                // priority.
+                if (!TrySelectContainer(index))
                 {
-                    if (resultsGrid.ItemContainerGenerator.ContainerFromItem(entry) is DataGridRow row)
+                    Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        row.Focus();
-                    }
-                }), System.Windows.Threading.DispatcherPriority.Loaded);
+                        resultsGrid.UpdateLayout();
+                        TrySelectContainer(index);
+                    }), System.Windows.Threading.DispatcherPriority.Background);
+                }
+                ReportVisibleRange();
             }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
+        /// <summary>
+        /// Selects the realized row container at <paramref name="index"/> (driving the grid's real
+        /// selection + SelectedCellsChanged) and focuses it. Returns false if the container isn't
+        /// realized yet, so the caller can retry. Works with the data-virtualized collection because it
+        /// never relies on Items.IndexOf.
+        /// </summary>
+        private bool TrySelectContainer(int index)
+        {
+            if (!(resultsGrid.ItemContainerGenerator.ContainerFromIndex(index) is DataGridRow row))
+            {
+                return false;
+            }
+            row.IsSelected = true;      // real selection; raises SelectedCellsChanged -> detail view
+            resultsGrid.SelectedItem = row.Item; // keep SelectedItem in sync (item is the realized one)
+            row.Focus();
+            return true;
         }
 
         /// <summary>
@@ -171,6 +196,65 @@ namespace NuixLogReviewer.GUI
             }
             return -1;
         }
+
+        // --- Find within results -------------------------------------------------------------------
+        // The set of entry ids matching the current Find term (owned by MainWindow's find engine).
+        // Kept here so that rows realized LATER by data-virtualization (on scroll) also get marked, via
+        // resultsGrid_LoadingRow. Null/empty => no active find (indicator column hidden).
+        private HashSet<long> _findMatchIds;
+
+        /// <summary>
+        /// Marks the rows whose ids are in <paramref name="matchIds"/> with the Find indicator dot,
+        /// shows the indicator column, and updates any already-realized rows. Rows realized later are
+        /// marked on the fly in <see cref="resultsGrid_LoadingRow"/>. Pass null/empty to clear.
+        /// </summary>
+        public void SetFindMatches(HashSet<long> matchIds)
+        {
+            _findMatchIds = (matchIds != null && matchIds.Count > 0) ? matchIds : null;
+            colFindMatch.Visibility = _findMatchIds != null ? Visibility.Visible : Visibility.Collapsed;
+            ApplyFindMatchesToRealizedRows();
+        }
+
+        /// <summary>Clears the Find indicator and hides its column.</summary>
+        public void ClearFindMatches() => SetFindMatches(null);
+
+        /// <summary>
+        /// Applies the current match set to the rows currently realized as containers (data
+        /// virtualization means only these exist as objects). Off-screen rows are handled when they
+        /// realize, in <see cref="resultsGrid_LoadingRow"/>.
+        /// </summary>
+        private void ApplyFindMatchesToRealizedRows()
+        {
+            for (int i = 0; i < resultsGrid.Items.Count; i++)
+            {
+                // ContainerFromIndex returns null for unrealized (virtualized-away) rows, so this only
+                // touches realized ones - it does NOT force materialization of the whole set.
+                if (resultsGrid.ItemContainerGenerator.ContainerFromIndex(i) is DataGridRow row
+                    && row.Item is NuixLogEntry entry)
+                {
+                    entry.MatchHighlight = _findMatchIds != null && _findMatchIds.Contains(entry.ID);
+                }
+            }
+        }
+
+        /// <summary>
+        /// As each row is realized (including on scroll under data-virtualization), stamp its Find-match
+        /// state from the current match set so the indicator dot is correct without materializing the
+        /// whole result set.
+        /// </summary>
+        private void resultsGrid_LoadingRow(object sender, DataGridRowEventArgs e)
+        {
+            if (e.Row.Item is NuixLogEntry entry)
+            {
+                entry.MatchHighlight = _findMatchIds != null && _findMatchIds.Contains(entry.ID);
+            }
+        }
+
+        /// <summary>
+        /// Resolves an entry id to its ordinal index in the current set and selects+scrolls to it.
+        /// Thin wrapper over <see cref="SelectAndScrollTo"/> used by Find next/prev.
+        /// </summary>
+        public void SelectAndScrollToId(long id) => SelectAndScrollTo(id);
 
         /// <summary>
         /// Scrolls so the target row sits roughly in the middle of the viewport (rather than clamped to

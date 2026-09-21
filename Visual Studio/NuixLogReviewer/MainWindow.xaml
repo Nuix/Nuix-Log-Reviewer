@@ -165,7 +165,8 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <Grid Grid.Row="0" Grid.Column="0" Margin="5,4,5,4">
+            <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Vertical">
+            <Grid Margin="5,4,5,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="auto"/>
                     <ColumnDefinition Width="auto"/>
@@ -197,6 +198,48 @@
                 </Button>
 
             </Grid>
+
+            <!-- Find within results: marks (does NOT filter) rows in the current set whose full Content
+                 matches. Distinct from the Query bar above. -->
+            <Grid Margin="5,0,5,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
+                </Grid.ColumnDefinitions>
+                <Label Content="Find" Grid.Column="0" FontWeight="SemiBold"
+                       Foreground="{StaticResource Brush.TextMuted}" Margin="0,0,4,0"
+                       ToolTip="Mark rows in the current results whose full content matches (does not filter the set)."/>
+                <TextBox x:Name="txtFind" Grid.Column="1" FontFamily="{StaticResource Font.Mono}"
+                         KeyUp="txtFind_KeyUp"
+                         ToolTip="Type text to mark matching rows. Enter = next match, Shift+Enter = previous, Esc = clear."/>
+                <CheckBox x:Name="chkFindRegex" Grid.Column="2" Content="Regex" VerticalAlignment="Center"
+                          Margin="8,0,0,0" Click="findOptions_Changed"
+                          ToolTip="Treat the term as a .NET regular expression (off = literal text)."/>
+                <CheckBox x:Name="chkFindCase" Grid.Column="3" Content="Case" VerticalAlignment="Center"
+                          Margin="8,0,0,0" Click="findOptions_Changed"
+                          ToolTip="Case-sensitive matching."/>
+                <TextBlock x:Name="lblFindStatus" Grid.Column="4" VerticalAlignment="Center"
+                           Margin="10,0,4,0" MinWidth="70" Foreground="{StaticResource Brush.TextMuted}"/>
+                <Button x:Name="btnFindPrev" Grid.Column="5" Click="btnFindPrev_Click" IsEnabled="False"
+                        Style="{StaticResource IconButton}" ToolTip="Previous match (Shift+Enter)">
+                    <TextBlock Text="&#xE70E;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                </Button>
+                <Button x:Name="btnFindNext" Grid.Column="6" Click="btnFindNext_Click" IsEnabled="False"
+                        Style="{StaticResource IconButton}" Margin="2,0,0,0" ToolTip="Next match (Enter)">
+                    <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="12"/>
+                </Button>
+                <Button x:Name="btnFindClear" Grid.Column="7" Click="btnFindClear_Click" Margin="6,0,0,0"
+                        Style="{StaticResource IconButton}" ToolTip="Clear find">
+                    <Image Source="cancel.png" Width="14" Height="14"/>
+                </Button>
+            </Grid>
+            </StackPanel>
             <local:LogEntryGrid x:Name="resultsGrid" Grid.Row="1" Grid.Column="0" SelectedLogEntryChanged="resultsGrid_SelectedLogEntryChanged" PivotAroundEntryRequested="resultsGrid_PivotAroundEntryRequested" VisibleRangeChanged="resultsGrid_VisibleRangeChanged" Margin="2"/>
             <!-- Drag to resize the timeline strip taller/shorter (useful when many job lanes are shown). -->
             <GridSplitter Grid.Row="2" Grid.Column="0" Height="6" HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
@@ -235,8 +278,9 @@
                 </Button>
                 <Separator/>
                 <Label Content="Range:" FontWeight="Bold"/>
-                <Label Name="lblDateRange" Content="—" FontFamily="{StaticResource Font.Mono}">
-                    <Label.ToolTip>Time span of the currently loaded log set (oldest to newest event).</Label.ToolTip>
+                <Label Name="lblDateRange" Content="—" FontFamily="{StaticResource Font.Mono}"
+                       Cursor="Hand" MouseLeftButtonUp="lblDateRange_MouseLeftButtonUp">
+                    <Label.ToolTip>Time span of the currently loaded log set (oldest to newest event). Click to copy the range and span to the clipboard.</Label.ToolTip>
                 </Label>
                 <Separator x:Name="sepExcluded" Visibility="Collapsed"/>
                 <Label Name="lblExcluded" Visibility="Collapsed" Foreground="{StaticResource Brush.TextMuted}">

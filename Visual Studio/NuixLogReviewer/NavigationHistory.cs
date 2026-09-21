@@ -77,6 +77,13 @@ namespace NuixLogReviewer
         public ViewState Current => (_index >= 0 && _index < _stack.Count) ? _stack[_index] : null;
         public int Count => _stack.Count;
 
+        /// <summary>Empties the history (e.g. when a new log set is loaded into the same session).</summary>
+        public void Clear()
+        {
+            _stack.Clear();
+            _index = -1;
+        }
+
         /// <summary>
         /// Records a navigation to <paramref name="state"/>. If it's the same view as the current entry
         /// (query+hidden-sets), just refreshes that entry's stored position instead of adding a step.

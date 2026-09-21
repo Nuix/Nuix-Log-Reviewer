@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace NuixLogReviewer.LogRepository
 {
-    public class NuixLogEntry
+    public class NuixLogEntry : INotifyPropertyChanged
     {
         public long ID { get; set; }
         public int LineNumber { get; set; }
@@ -40,6 +41,27 @@ namespace NuixLogReviewer.LogRepository
         /// (see NuixLogEntryItemProvider.FetchRange). Drives the grid's time-gap visual cue.
         /// </summary>
         public TimeSpan? GapToPrevious { get; set; }
+
+        // --- Find-within-results indicator ---------------------------------------------------------
+        // Whether this row matches the current "Find within results" term. Drives the leading
+        // colored-circle indicator column. Set live (on the UI thread) as the find pass evaluates the
+        // current set, so it must notify - realized rows are already bound when the find runs, unlike
+        // GapToPrevious which is stamped before binding. Cleared when find is cleared.
+        private bool _matchHighlight;
+        public bool MatchHighlight
+        {
+            get { return _matchHighlight; }
+            set
+            {
+                if (_matchHighlight != value)
+                {
+                    _matchHighlight = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MatchHighlight)));
+                }
+            }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
 
         public NuixLogEntry() {
             Flags = new String[] { };

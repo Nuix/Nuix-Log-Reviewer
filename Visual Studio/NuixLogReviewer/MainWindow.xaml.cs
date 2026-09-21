@@ -170,6 +170,26 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
+        /// Clicking the "Range:" value copies the displayed range and span (e.g.
+        /// "2026-09-18 12:06:31 -> 2026-09-18 14:51:39  (2h 45m)") to the clipboard. No-op when no
+        /// range is shown (placeholder dash).
+        /// </summary>
+        private void lblDateRange_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            string text = lblDateRange.Content as string;
+            if (string.IsNullOrEmpty(text) || text == "\u2014") return;
+            try
+            {
+                System.Windows.Clipboard.SetText(text);
+                lblStatus.Text = "Range copied to clipboard.";
+            }
+            catch
+            {
+                // Clipboard can transiently fail if another process holds it; ignore.
+            }
+        }
+
+        /// <summary>
         /// Formats a TimeSpan compactly, e.g. "5d 16h", "3h 12m", "45s".
         /// </summary>
         private static string FormatSpan(TimeSpan span)
@@ -420,6 +440,11 @@ namespace NuixLogReviewer
 
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        // A new load replaces the corpus: clear all session/view state carried over from
+                        // any previous load in this session (compute-on-demand Patterns/Jobs/Insights
+                        // snapshots, hidden-file/template sets, history) so nothing stale lingers.
+                        resetSessionState();
+
                         txtSearchQuery.Text = "";
                         // Seed the session hidden-set from the configured defaults for the flags present
                         // in this loaded set. Done once per load; the user can then toggle per session.
@@ -430,6 +455,42 @@ namespace NuixLogReviewer
                 });
                 loadFilesTask.Start();
             }
+        }
+
+        /// <summary>
+        /// Resets per-session, per-corpus UI state when a new log set is loaded into the same session.
+        /// The grid/chart/classifier/file tables are refreshed by the performSearch() that follows, so
+        /// this focuses on the state that would otherwise linger: the compute-on-demand Patterns/Jobs/
+        /// Insights snapshots, the hidden-file/template view-filters (hidden-flags are re-seeded
+        /// separately), and the navigation history.
+        /// </summary>
+        private void resetSessionState()
+        {
+            // Patterns snapshot + its list/labels.
+            _lastPatterns = null;
+            patternList.ItemsSource = null;
+            lblPatternsTotal.Text = "";
+            setPatternsStale(false);
+
+            // Jobs snapshot + list.
+            _lastJobs = null;
+            jobList.ItemsSource = null;
+
+            // Insights list + label.
+            insightList.ItemsSource = null;
+            lblInsightsInfo.Text = "";
+
+            // Session hidden-sets that aren't otherwise reset (hidden-flags are re-seeded by
+            // seedVisibilityDefaults for the new load; files/templates have no re-seed, so clear them).
+            _hiddenFiles.Clear();
+            _hiddenTemplates.Clear();
+
+            // Navigation history belongs to the previous corpus.
+            _history.Clear();
+            updateHistoryButtons();
+
+            // Any active Find belongs to the previous corpus.
+            clearFind();
         }
 
         /// <summary>
@@ -1518,6 +1579,7 @@ namespace NuixLogReviewer
             levelChart.MarkRequested(chartBuckets);
 
             resultsGrid.SetLogEntries(hits);
+            refreshFindForNewResults();
         }
 
         // ===================== Jobs tab =====================
@@ -1895,6 +1957,225 @@ namespace NuixLogReviewer
                     rebuildSavedSearchesMenu();
                 }
             }
+        }
+
+        // ===================== Find within results =====================================================
+        // Marks (does NOT filter) rows in the current result set whose FULL Content matches the Find
+        // term. Because the grid is data-virtualized, matching runs as a cancellable background pass
+        // that streams the current set's ids -> rows via the DB, collecting the matching ids (for the
+        // indicator dots) and the matching ordinals (for next/prev navigation). Row dots are applied by
+        // LogEntryGrid, which also marks rows realized later on scroll.
+
+        private System.Threading.CancellationTokenSource _findCts;
+        private int _findGeneration;
+        // Ordinals (indices into the current ordered-id list) of matching rows, ascending. Drives next/prev.
+        private List<int> _findMatchOrdinals = new List<int>();
+        private int _findCurrentPos = -1; // index into _findMatchOrdinals, or -1 when none/unset
+
+        private void txtFind_KeyUp(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape) { clearFind(); return; }
+            if (e.Key == Key.Enter)
+            {
+                bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                // If the term changed since the last run, (re)run; otherwise just step.
+                runFind(thenNavigate: shift ? FindStep.Prev : FindStep.Next);
+                return;
+            }
+        }
+
+        private void findOptions_Changed(object sender, RoutedEventArgs e) => runFind(FindStep.None);
+        private void btnFindNext_Click(object sender, RoutedEventArgs e) => stepFind(FindStep.Next);
+        private void btnFindPrev_Click(object sender, RoutedEventArgs e) => stepFind(FindStep.Prev);
+        private void btnFindClear_Click(object sender, RoutedEventArgs e) => clearFind();
+
+        /// <summary>
+        /// Called after a new result set loads. The grid already dropped its old match state; if a Find
+        /// term is present, re-run it (mark-only, no navigation) so the indicator reflects the new set;
+        /// otherwise reset the Find status/nav to idle.
+        /// </summary>
+        private void refreshFindForNewResults()
+        {
+            if (!string.IsNullOrEmpty(txtFind.Text))
+            {
+                runFind(FindStep.None);
+            }
+            else
+            {
+                _findMatchOrdinals = new List<int>();
+                _findCurrentPos = -1;
+                lblFindStatus.Text = "";
+                btnFindNext.IsEnabled = false;
+                btnFindPrev.IsEnabled = false;
+            }
+        }
+
+        private enum FindStep { None, Next, Prev }
+
+        private void clearFind()
+        {
+            try { _findCts?.Cancel(); } catch { }
+            _findGeneration++;
+            txtFind.Text = "";
+            _findMatchOrdinals = new List<int>();
+            _findCurrentPos = -1;
+            resultsGrid.ClearFindMatches();
+            lblFindStatus.Text = "";
+            btnFindNext.IsEnabled = false;
+            btnFindPrev.IsEnabled = false;
+        }
+
+        /// <summary>
+        /// Builds the matcher predicate from the term + option toggles, or null if the term is empty or
+        /// (for regex mode) fails to compile. Sets a status message on regex-compile failure.
+        /// </summary>
+        private Func<string, bool> BuildFindPredicate(string term)
+        {
+            if (string.IsNullOrEmpty(term)) return null;
+
+            bool caseSensitive = chkFindCase.IsChecked == true;
+            if (chkFindRegex.IsChecked == true)
+            {
+                try
+                {
+                    var opts = System.Text.RegularExpressions.RegexOptions.Compiled;
+                    if (!caseSensitive) opts |= System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+                    var rx = new System.Text.RegularExpressions.Regex(term, opts);
+                    return s => s != null && rx.IsMatch(s);
+                }
+                catch (ArgumentException ex)
+                {
+                    lblFindStatus.Text = "bad regex";
+                    lblFindStatus.ToolTip = ex.Message;
+                    return null;
+                }
+            }
+            // Literal substring match.
+            var cmp = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            return s => s != null && s.IndexOf(term, cmp) >= 0;
+        }
+
+        /// <summary>
+        /// Runs the find over the current result set on a background task, marks matching rows, updates
+        /// the count, and optionally navigates to the first/next/prev match when done.
+        /// </summary>
+        private void runFind(FindStep thenNavigate)
+        {
+            lblFindStatus.ToolTip = null;
+            string term = txtFind.Text;
+            var predicate = BuildFindPredicate(term);
+            if (predicate == null)
+            {
+                // Empty term clears; bad regex leaves the "bad regex" status set by BuildFindPredicate.
+                if (string.IsNullOrEmpty(term)) { clearFind(); }
+                else { resultsGrid.ClearFindMatches(); _findMatchOrdinals = new List<int>(); _findCurrentPos = -1; btnFindNext.IsEnabled = btnFindPrev.IsEnabled = false; }
+                return;
+            }
+
+            var ids = resultsGrid.CurrentOrderedIds;
+            if (ids == null || ids.Count == 0)
+            {
+                lblFindStatus.Text = "0 matches";
+                resultsGrid.ClearFindMatches();
+                _findMatchOrdinals = new List<int>(); _findCurrentPos = -1;
+                btnFindNext.IsEnabled = btnFindPrev.IsEnabled = false;
+                return;
+            }
+
+            // Cancel any in-flight find and start a fresh generation.
+            try { _findCts?.Cancel(); } catch { }
+            var cts = new System.Threading.CancellationTokenSource();
+            _findCts = cts;
+            int gen = ++_findGeneration;
+            var token = cts.Token;
+
+            // Snapshot the id list (ordinal order) so the background pass has a stable view.
+            var idList = ids.ToList();
+            lblFindStatus.Text = "finding...";
+
+            Task.Run(() =>
+            {
+                var matchIds = new HashSet<long>();
+                // Map id -> ordinal for this run (ReadEntries doesn't preserve input order).
+                var idToOrdinal = new Dictionary<long, int>(idList.Count);
+                for (int i = 0; i < idList.Count; i++) idToOrdinal[idList[i]] = i;
+
+                // Stream in chunks so a huge set doesn't build one giant IN(...) and so we can cancel.
+                const int chunk = 2000;
+                for (int start = 0; start < idList.Count; start += chunk)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var slice = idList.Skip(start).Take(chunk);
+                    foreach (var entry in repo.Database.ReadEntries(slice))
+                    {
+                        if (entry?.Content != null && predicate(entry.Content))
+                        {
+                            matchIds.Add(entry.ID);
+                        }
+                    }
+                }
+
+                // Derive ordinals of matches (ascending) from the id->ordinal map.
+                var ordinals = new List<int>(matchIds.Count);
+                foreach (var id in matchIds)
+                {
+                    if (idToOrdinal.TryGetValue(id, out int ord)) ordinals.Add(ord);
+                }
+                ordinals.Sort();
+                return (matchIds, ordinals);
+            }, token).ContinueWith(t =>
+            {
+                if (gen != _findGeneration) return; // superseded by a newer find
+                if (t.IsCanceled) return;
+                if (t.IsFaulted)
+                {
+                    lblFindStatus.Text = "find error";
+                    lblFindStatus.ToolTip = t.Exception?.GetBaseException().Message;
+                    return;
+                }
+
+                var (matchIds, ordinals) = t.Result;
+                _findMatchOrdinals = ordinals;
+                _findCurrentPos = -1;
+                resultsGrid.SetFindMatches(matchIds);
+
+                int count = ordinals.Count;
+                lblFindStatus.Text = count == 1 ? "1 match" : count + " matches";
+                btnFindNext.IsEnabled = count > 0;
+                btnFindPrev.IsEnabled = count > 0;
+
+                if (count > 0 && thenNavigate != FindStep.None)
+                {
+                    stepFind(thenNavigate);
+                }
+            }, System.Threading.CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        /// <summary>
+        /// Moves to the next/previous match (wrapping) and scrolls to it. Re-runs the find first if the
+        /// term changed but hasn't been evaluated yet (handled by runFind calling stepFind on completion).
+        /// </summary>
+        private void stepFind(FindStep dir)
+        {
+            var ordinals = _findMatchOrdinals;
+            if (ordinals == null || ordinals.Count == 0) return;
+
+            if (dir == FindStep.Next)
+            {
+                _findCurrentPos = (_findCurrentPos + 1) % ordinals.Count;
+            }
+            else if (dir == FindStep.Prev)
+            {
+                _findCurrentPos = (_findCurrentPos <= 0) ? ordinals.Count - 1 : _findCurrentPos - 1;
+            }
+            else return;
+
+            int ordinal = ordinals[_findCurrentPos];
+            var ids = resultsGrid.CurrentOrderedIds;
+            if (ids == null || ordinal < 0 || ordinal >= ids.Count) return;
+
+            resultsGrid.SelectAndScrollToId(ids[ordinal]);
+            lblFindStatus.Text = $"{_findCurrentPos + 1} of {ordinals.Count}";
         }
     }
 }

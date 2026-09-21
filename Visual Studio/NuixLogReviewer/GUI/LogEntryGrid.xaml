@@ -9,9 +9,14 @@
     <UserControl.Resources>
         <local:GapToBrushMultiConverter x:Key="GapToBrush"/>
         <local:GapToTextConverter x:Key="GapToText"/>
+        <!-- Find-within-results indicator dot. Deliberately magenta so it never reads as a log LEVEL
+             (red/amber/green/cyan) or as the blue selection/brand accent. -->
+        <SolidColorBrush x:Key="Brush.FindMatch" Color="#D500F9"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </UserControl.Resources>
     <Grid>
         <DataGrid  Name="resultsGrid" Grid.Row="0" SelectedCellsChanged="resultsGrid_SelectedCellsChanged"
+                  LoadingRow="resultsGrid_LoadingRow"
                   AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
                   CanUserReorderColumns="False" CanUserResizeColumns="True" CanUserResizeRows="False" CanUserSortColumns="False" SelectionMode="Single">
             <DataGrid.Resources>
@@ -26,6 +31,20 @@
             </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <!-- <DataGridTextColumn Header="ID" Binding="{Binding ID}" FontFamily="Consolas"/> -->
+                <!-- Find-within-results indicator: a magenta dot on rows matching the active Find term.
+                     Column is collapsed unless a Find is active (toggled from code-behind, like colGap).
+                     The dot itself is bound to each row's MatchHighlight. -->
+                <DataGridTemplateColumn x:Name="colFindMatch" Header="" Width="18" Visibility="Collapsed"
+                                        CanUserSort="False">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Ellipse Width="9" Height="9" Fill="{StaticResource Brush.FindMatch}"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center"
+                                     Visibility="{Binding MatchHighlight, Converter={StaticResource BoolToVis}}"
+                                     ToolTip="Matches the current Find term"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <!-- File shows the shortest-unique path tail (matching the Files tab); the full path is
                      the tooltip. -->
                 <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas">
@@ -79,6 +98,15 @@
                         <DataTrigger Binding="{Binding Level}" Value="DEBUG">
                             <Setter Property="Background" Value="#3F00F2FF"></Setter>
                         </DataTrigger>
+                        <!-- Selection MUST win over the Level-color DataTriggers above. Within
+                             Style.Triggers the last matching trigger takes precedence, so this
+                             IsSelected trigger (placed last) overrides the per-level Background that
+                             would otherwise hide the selection highlight. Strong brand fill + light
+                             text so the selected row is unmistakable regardless of its level. -->
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="{StaticResource Brush.Brand}"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </Trigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
