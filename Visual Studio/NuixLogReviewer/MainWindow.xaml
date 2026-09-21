@@ -12,6 +12,7 @@
         Closing="Window_Closing">
 
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisPattern"/>
         <!--
           Header style for the Patterns grid that shows a sort-direction arrow on the active column.
           The arrow is driven by each header's Tag: "asc" shows an up arrow, "desc" a down arrow, and
@@ -401,6 +402,15 @@
                         <Button x:Name="btnShowAllPatterns" DockPanel.Dock="Left" Content="Show all"
                                 Click="btnShowAllPatterns_Click" Padding="6,2" Margin="6,0,0,0"
                                 ToolTip="Un-hide every pattern (clears per-pattern hides)."/>
+                        <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" Margin="14,0,4,0"
+                                   Foreground="{StaticResource Brush.TextMuted}" Text="Expand by:"/>
+                        <ComboBox x:Name="cmbPatternGroupBy" DockPanel.Dock="Left" VerticalAlignment="Center"
+                                  Width="130" SelectionChanged="cmbPatternGroupBy_SelectionChanged"
+                                  ToolTip="How to break a pattern into sub-patterns when expanded.">
+                            <ComboBoxItem Content="Worker" IsSelected="True"/>
+                            <ComboBoxItem Content="Exception"/>
+                            <ComboBoxItem Content="Sub-template"/>
+                        </ComboBox>
                         <TextBlock x:Name="lblPatternsStale" DockPanel.Dock="Left" VerticalAlignment="Center"
                                    Margin="12,0,0,0" Visibility="Collapsed"
                                    Foreground="{StaticResource Brush.Warn}"
@@ -409,28 +419,40 @@
                                    Margin="0,0,4,0" Foreground="{StaticResource Brush.TextMuted}"
                                    ToolTip="Number of distinct patterns listed (and the total entries they cover)."/>
                     </DockPanel>
-                    <ListView x:Name="patternList" Grid.Row="1" MouseDoubleClick="patternList_MouseDoubleClick"
-                              GridViewColumnHeader.Click="patternList_ColumnHeaderClick"
-                              SelectionMode="Extended"
+                    <DataGrid x:Name="patternList" Grid.Row="1" MouseDoubleClick="patternList_MouseDoubleClick"
+                              AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                              CanUserDeleteRows="False" CanUserReorderColumns="False" CanUserResizeRows="False"
+                              SelectionMode="Extended" HeadersVisibility="Column" GridLinesVisibility="None"
+                              RowDetailsVisibilityMode="Collapsed"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
-                        <ListView.CommandBindings>
+                        <DataGrid.CommandBindings>
                             <CommandBinding Command="Copy" Executed="patternCopyRows_Executed" CanExecute="patternCopy_CanExecute"/>
-                        </ListView.CommandBindings>
-                        <ListView.InputBindings>
+                        </DataGrid.CommandBindings>
+                        <DataGrid.InputBindings>
                             <!-- Ctrl+C copies the full selected rows (tab-separated). -->
                             <KeyBinding Key="C" Modifiers="Control" Command="Copy"/>
-                        </ListView.InputBindings>
-                        <ListView.ContextMenu>
+                        </DataGrid.InputBindings>
+                        <DataGrid.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="Copy" Click="patternCopyRows_Click"
                                           ToolTip="Copy the selected rows (Count, First/Last Seen, Pattern) as tab-separated text."/>
                                 <MenuItem Header="Copy Pattern(s) Only" Click="patternCopyTemplates_Click"
                                           ToolTip="Copy just the pattern template text of the selected rows, one per line."/>
+                                <Separator/>
+                                <MenuItem Header="Copy Summary (rich + Markdown)" Click="patternCopySummaryRich_Click"
+                                          ToolTip="Copy a per-pattern summary (pattern, count, one real example) as HTML (rich paste) plus Markdown text."/>
+                                <MenuItem Header="Copy Summary (for Slack)" Click="patternCopySummarySlack_Click"
+                                          ToolTip="Copy a per-pattern summary using Slack mrkdwn (bold headers, fenced code blocks) - paste into a Slack message and send."/>
+                                <MenuItem Header="Copy Summary (plain text)" Click="patternCopySummaryPlain_Click"
+                                          ToolTip="Copy a per-pattern summary as plain text (no Markdown syntax)."/>
+                                <Separator/>
+                                <MenuItem Header="Save Summary to HTML File..." Click="patternSaveSummaryHtml_Click"
+                                          ToolTip="Save a per-pattern summary (pattern, count, one real example) as a standalone HTML file."/>
                             </ContextMenu>
-                        </ListView.ContextMenu>
-                        <ListView.ItemContainerStyle>
-                            <Style TargetType="ListViewItem">
+                        </DataGrid.ContextMenu>
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
                                 <Setter Property="ToolTip" Value="{Binding Template}"/>
                                 <Style.Triggers>
                                     <!-- Hidden patterns (eye-off) are greyed to show they're excluded
@@ -440,55 +462,129 @@
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.View>
-                            <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
-                                <GridViewColumn Header="" Width="34">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <Button Content="{Binding EyeGlyph}" ToolTip="{Binding EyeToolTip}"
-                                                    Click="patternEyeToggle_Click" Tag="{Binding}"
-                                                    Style="{StaticResource EyeToggleButton}"/>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="Count" DisplayMemberBinding="{Binding Count, StringFormat='{}{0:N0}'}" Width="70"/>
-                                <GridViewColumn Header="Level" Width="60">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding DominantLevel}" FontWeight="SemiBold">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="ERROR">
-                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Error}"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="WARN">
-                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Warn}"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="INFO">
-                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Info}"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding DominantLevel}" Value="DEBUG">
-                                                                <Setter Property="Foreground" Value="{StaticResource Brush.Debug}"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="ERR" DisplayMemberBinding="{Binding Error, StringFormat='{}{0:N0}'}" Width="55"/>
-                                <GridViewColumn Header="WARN" DisplayMemberBinding="{Binding Warn, StringFormat='{}{0:N0}'}" Width="55"/>
-                                <GridViewColumn Header="INFO" DisplayMemberBinding="{Binding Info, StringFormat='{}{0:N0}'}" Width="55"/>
-                                <GridViewColumn Header="DBG" DisplayMemberBinding="{Binding Debug, StringFormat='{}{0:N0}'}" Width="55"/>
-                                <GridViewColumn Header="First Seen" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
-                                <GridViewColumn Header="Last Seen" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
-                                <GridViewColumn Header="Pattern" DisplayMemberBinding="{Binding Template}" Width="900"/>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Columns>
+                            <!-- Expander: only shown when the folded pattern has >1 sub-pattern. Toggles
+                                 this row's details (the nested sub-pattern list). -->
+                            <DataGridTemplateColumn Header="" Width="26" CanUserSort="False">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ToggleButton Click="patternExpand_Click" Tag="{Binding}"
+                                                      Focusable="False" BorderThickness="0" Background="Transparent"
+                                                      ToolTip="Break this pattern into sub-patterns (by the 'Expand by' choice)">
+                                            <TextBlock Text="&#xE76C;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
+                                        </ToggleButton>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="" Width="34" CanUserSort="False">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="{Binding EyeGlyph}" ToolTip="{Binding EyeToolTip}"
+                                                Click="patternEyeToggle_Click" Tag="{Binding}"
+                                                Style="{StaticResource EyeToggleButton}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat='{}{0:N0}'}" Width="70" SortMemberPath="Count"/>
+                            <DataGridTemplateColumn Header="Level" Width="60" SortMemberPath="DominantLevel">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DominantLevel}" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding DominantLevel}" Value="ERROR">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Error}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DominantLevel}" Value="WARN">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Warn}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DominantLevel}" Value="INFO">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Info}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DominantLevel}" Value="DEBUG">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Debug}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="ERR" Binding="{Binding Error, StringFormat='{}{0:N0}'}" Width="55" SortMemberPath="Error"/>
+                            <DataGridTextColumn Header="WARN" Binding="{Binding Warn, StringFormat='{}{0:N0}'}" Width="55" SortMemberPath="Warn"/>
+                            <DataGridTextColumn Header="INFO" Binding="{Binding Info, StringFormat='{}{0:N0}'}" Width="55" SortMemberPath="Info"/>
+                            <DataGridTextColumn Header="DBG" Binding="{Binding Debug, StringFormat='{}{0:N0}'}" Width="55" SortMemberPath="Debug"/>
+                            <DataGridTextColumn Header="First Seen" Binding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140" SortMemberPath="FirstSeen"/>
+                            <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140" SortMemberPath="LastSeen"/>
+                            <DataGridTextColumn Header="Pattern" Binding="{Binding Template}" Width="900" SortMemberPath="Template"/>
+                        </DataGrid.Columns>
+                        <!-- Row details: the more-specific sub-patterns folded into this pattern. Its own
+                             read-only grid, drill-down on double-click. Shown only when expanded. -->
+                        <DataGrid.RowDetailsTemplate>
+                            <DataTemplate>
+                                <!-- Sub-patterns view. Uses an ItemsControl with a shared-size Grid per
+                                     row (not a nested DataGrid, which collapses to minimum size inside a
+                                     RowDetails/ScrollViewer). Columns align via SharedSizeGroup; each row
+                                     handles double-click to drill down. Sizes to content. -->
+                                <Border Margin="60,2,8,6" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                        Background="{StaticResource Brush.SurfaceAlt}" HorizontalAlignment="Stretch"
+                                        Grid.IsSharedSizeScope="True">
+                                    <StackPanel Margin="2">
+                                        <!-- Header row -->
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cGroup"/>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cCount"/>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cErr"/>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cWarn"/>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cInfo"/>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cDbg"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Group" FontWeight="SemiBold" Margin="6,2" MinWidth="180"/>
+                                            <TextBlock Grid.Column="1" Text="Count" FontWeight="SemiBold" Margin="10,2" MinWidth="50" TextAlignment="Right"/>
+                                            <TextBlock Grid.Column="2" Text="ERR" FontWeight="SemiBold" Margin="10,2" MinWidth="40" TextAlignment="Right"/>
+                                            <TextBlock Grid.Column="3" Text="WARN" FontWeight="SemiBold" Margin="10,2" MinWidth="40" TextAlignment="Right"/>
+                                            <TextBlock Grid.Column="4" Text="INFO" FontWeight="SemiBold" Margin="10,2" MinWidth="40" TextAlignment="Right"/>
+                                            <TextBlock Grid.Column="5" Text="DBG" FontWeight="SemiBold" Margin="10,2" MinWidth="40" TextAlignment="Right"/>
+                                            <TextBlock Grid.Column="6" Text="Detail" FontWeight="SemiBold" Margin="10,2"/>
+                                        </Grid>
+                                        <ItemsControl ItemsSource="{Binding MemberPatterns}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <!-- Double-click a sub-pattern row to drill down. -->
+                                                    <Border Background="Transparent" MouseLeftButtonDown="patternMemberRow_Click"
+                                                            ToolTip="Double-click to drill the grid to this sub-group's entries">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cGroup"/>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cCount"/>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cErr"/>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cWarn"/>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cInfo"/>
+                                                                <ColumnDefinition Width="Auto" SharedSizeGroup="cDbg"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding Label}" Margin="6,1" MinWidth="180" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Grid.Column="1" Text="{Binding Count, StringFormat='{}{0:N0}'}" Margin="10,1" MinWidth="50" TextAlignment="Right"/>
+                                                            <TextBlock Grid.Column="2" Text="{Binding Error, StringFormat='{}{0:N0}'}" Margin="10,1" MinWidth="40" TextAlignment="Right"/>
+                                                            <TextBlock Grid.Column="3" Text="{Binding Warn, StringFormat='{}{0:N0}'}" Margin="10,1" MinWidth="40" TextAlignment="Right"/>
+                                                            <TextBlock Grid.Column="4" Text="{Binding Info, StringFormat='{}{0:N0}'}" Margin="10,1" MinWidth="40" TextAlignment="Right"/>
+                                                            <TextBlock Grid.Column="5" Text="{Binding Debug, StringFormat='{}{0:N0}'}" Margin="10,1" MinWidth="40" TextAlignment="Right"/>
+                                                            <TextBlock Grid.Column="6" Text="{Binding Template}" Margin="10,1" TextTrimming="CharacterEllipsis"/>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </DataGrid.RowDetailsTemplate>
+                    </DataGrid>
                 </Grid>
             </TabItem>
             <TabItem Header="Jobs" x:Name="tabJobs">

@@ -863,6 +863,51 @@ namespace NuixLogReviewer.LogRepository
                     return "DEBUG";
                 }
             }
+
+            /// <summary>
+            /// The more-specific sub-patterns this pattern breaks into, by the chosen grouping
+            /// dimension (worker / exception / sub-template). Computed ON DEMAND when the row is
+            /// expanded (see the Patterns grid), then cached here; null until first expanded. Setter
+            /// raises change notification so the row-details grid binds when it's filled.
+            /// </summary>
+            private IReadOnlyList<MemberPattern> _memberPatterns;
+            public IReadOnlyList<MemberPattern> MemberPatterns
+            {
+                get => _memberPatterns;
+                set { _memberPatterns = value; OnPropertyChanged(nameof(MemberPatterns)); }
+            }
+        }
+
+        /// <summary>
+        /// One more-specific sub-pattern within a folded <see cref="LogPattern"/>: a single raw
+        /// regex-template with its own count, per-level tally, and contributing entry ids (for
+        /// drill-down and per-member hide). Mirrors the parent's count/level shape.
+        /// </summary>
+        public sealed class MemberPattern
+        {
+            /// <summary>The group label shown in the sub-pattern row (a worker, exception class, or a
+            /// finer sub-template - depending on the chosen grouping dimension).</summary>
+            public string Label { get; set; }
+            public string Template { get; set; }
+            public int Count { get; set; }
+            public int Info { get; set; }
+            public int Warn { get; set; }
+            public int Error { get; set; }
+            public int Debug { get; set; }
+            public IReadOnlyList<long> Ids { get; set; }
+
+            public string DominantLevel
+            {
+                get
+                {
+                    if (Error == 0 && Warn == 0 && Info == 0 && Debug == 0) return "";
+                    int max = Math.Max(Math.Max(Info, Warn), Math.Max(Error, Debug));
+                    if (Error == max) return "ERROR";
+                    if (Warn == max) return "WARN";
+                    if (Info == max) return "INFO";
+                    return "DEBUG";
+                }
+            }
         }
 
         /// <summary>

@@ -384,6 +384,7 @@ namespace NuixLogReviewer
             "automate-engine-server*.log*", // Automate engine server
             "engine.*-job.*.log*",          // Automate engine per-job logs
             "engine.*-init.log*",           // Automate engine init logs
+            "derby-server*.log*",           // Derby network server logs (structured; "HH:mm:ss,fff")
         };
 
         /// <summary>
@@ -1535,6 +1536,296 @@ namespace NuixLogReviewer
                 // The clipboard can transiently be locked by another process; ignore rather than crash.
             }
         }
+
+        // ===================== Pattern summary (with real example) =====================================
+        // Builds a shareable per-pattern summary: the matched pattern, its counts, and ONE full real
+        // example line from the log (raw content, incl. stack trace). Used to assemble findings.
+
+        /// <summary>One pattern's summary data: metadata + a representative real example.</summary>
+        private sealed class PatternSummaryItem
+        {
+            public LogSearchIndex.LogPattern Pattern;
+            public string Example; // the full raw Content of a representative entry (may be multi-line)
+            public List<string> Files = new List<string>(); // distinct short file names this pattern appears in
+        }
+
+        /// <summary>
+        /// Gathers the selected patterns (in display order) with one representative real example each.
+        /// The example is the entry with the earliest timestamp in the bucket (stable, "first occurrence").
+        /// Also collects the distinct short file names the pattern's entries came from.
+        /// </summary>
+        private List<PatternSummaryItem> BuildPatternSummaries()
+        {
+            var selected = new HashSet<LogSearchIndex.LogPattern>(
+                patternList.SelectedItems.OfType<LogSearchIndex.LogPattern>());
+            var rows = patternList.Items.OfType<LogSearchIndex.LogPattern>().Where(selected.Contains).ToList();
+
+            var items = new List<PatternSummaryItem>(rows.Count);
+            foreach (var p in rows)
+            {
+                var item = new PatternSummaryItem { Pattern = p };
+                if (p.Ids != null && p.Ids.Count > 0)
+                {
+                    // Read the bucket's entries: pick the earliest by timestamp as the example, and
+                    // collect the distinct short file names (the grid's disambiguated tail) it spans.
+                    NuixLogEntry rep = null;
+                    var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var entry in repo.Database.ReadEntries(p.Ids))
+                    {
+                        if (entry == null) continue;
+                        if (rep == null || entry.TimeStamp < rep.TimeStamp) rep = entry;
+                        if (!string.IsNullOrEmpty(entry.FileName)) files.Add(entry.FileName);
+                    }
+                    item.Example = rep?.Content;
+                    item.Files = files.OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+                }
+                items.Add(item);
+            }
+            return items;
+        }
+
+        private void patternCopySummaryRich_Click(object sender, RoutedEventArgs e)
+        {
+            var items = BuildPatternSummaries();
+            if (items.Count == 0) return;
+            string md = BuildSummaryMarkdown(items);
+            string html = BuildSummaryHtml(items);
+            try
+            {
+                var data = new DataObject();
+                data.SetData(DataFormats.UnicodeText, md);   // text fallback = Markdown (pastes well in chat/docs)
+                data.SetData(DataFormats.Text, md);
+                data.SetData(DataFormats.Html, WrapCfHtml(html)); // rich paste (Word/Outlook)
+                Clipboard.SetDataObject(data, true);
+            }
+            catch (Exception) { /* clipboard transiently locked; ignore */ }
+        }
+
+        private void patternCopySummaryPlain_Click(object sender, RoutedEventArgs e)
+        {
+            var items = BuildPatternSummaries();
+            if (items.Count == 0) return;
+            try { Clipboard.SetText(BuildSummaryPlain(items)); }
+            catch (Exception) { /* ignore */ }
+        }
+
+        private void patternCopySummarySlack_Click(object sender, RoutedEventArgs e)
+        {
+            var items = BuildPatternSummaries();
+            if (items.Count == 0) return;
+            try { Clipboard.SetText(BuildSummarySlack(items)); }
+            catch (Exception) { /* ignore */ }
+        }
+
+        /// <summary>Saves the selected patterns' summary as a standalone HTML document.</summary>
+        private void patternSaveSummaryHtml_Click(object sender, RoutedEventArgs e)
+        {
+            var items = BuildPatternSummaries();
+            if (items.Count == 0)
+            {
+                MessageBox.Show("Select one or more patterns first.");
+                return;
+            }
+
+            var sfd = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Save Pattern Summary",
+                FileName = "log-findings.html",
+                Filter = "HTML File (*.html)|*.html",
+            };
+            if (sfd.ShowDialog() != true) return;
+
+            try
+            {
+                System.IO.File.WriteAllText(sfd.FileName, BuildSummaryHtmlDocument(items), System.Text.Encoding.UTF8);
+                lblStatus.Text = "Summary saved: " + sfd.FileName;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not save the summary:\n" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Wraps the HTML summary fragment in a complete, standalone document (doctype, head, styles)
+        /// suitable for saving to a .html file and opening in a browser.
+        /// </summary>
+        private static string BuildSummaryHtmlDocument(List<PatternSummaryItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("<!DOCTYPE html>");
+            sb.AppendLine("<html lang=\"en\"><head><meta charset=\"utf-8\"/>");
+            sb.AppendLine("<title>Log findings</title>");
+            sb.AppendLine("<style>");
+            sb.AppendLine("body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#1b1d21;line-height:1.4}");
+            sb.AppendLine("h1{font-size:20px;border-bottom:2px solid #0056E3;padding-bottom:6px}");
+            sb.AppendLine("h2{font-size:15px;margin-top:24px;color:#00379B;word-break:break-word}");
+            sb.AppendLine("p{margin:4px 0}");
+            sb.AppendLine("pre{background:#f4f4f4;border:1px solid #ddd;border-radius:4px;padding:10px;");
+            sb.AppendLine("white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:12px;overflow-x:auto}");
+            sb.AppendLine("</style></head><body>");
+            sb.Append(BuildSummaryHtml(items));   // reuse the same fragment used for rich clipboard
+            sb.AppendLine("</body></html>");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Slack "mrkdwn" summary. Slack ignores pasted HTML/standard-Markdown, so this emits Slack's
+        /// own flavor so it renders when pasted into a message and sent: *bold* (single asterisks; used
+        /// as pseudo-headers since Slack has no # headers), `inline code`, and ``` fenced blocks ``` for
+        /// the examples. Note Slack only renders a code block from a fence that is on its OWN lines.
+        /// </summary>
+        private static string BuildSummarySlack(List<PatternSummaryItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("*Log findings*").AppendLine();
+            foreach (var it in items)
+            {
+                var p = it.Pattern;
+                // Pseudo-header: bold level + template (inline-code the template so its <PATH>/<Q>
+                // tokens and punctuation don't trip Slack's auto-formatting).
+                sb.AppendLine($"*{p.DominantLevel}:* `{SlackInline(p.Template)}`");
+                sb.AppendLine($"*Count:* {p.Count:N0} ({LevelBreakdown(p)})   |   *First:* {p.FirstSeen:yyyy-MM-dd HH:mm:ss}  *Last:* {p.LastSeen:yyyy-MM-dd HH:mm:ss}");
+                if (it.Files != null && it.Files.Count > 0)
+                {
+                    sb.AppendLine($"*Files ({it.Files.Count}):* {SlackInline(string.Join(", ", it.Files))}");
+                }
+                if (!string.IsNullOrEmpty(it.Example))
+                {
+                    // Fenced code block on its own lines so Slack renders monospace on send.
+                    sb.AppendLine("```");
+                    sb.AppendLine(it.Example.Replace("\r\n", "\n").TrimEnd());
+                    sb.AppendLine("```");
+                }
+                sb.AppendLine();
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>Neutralizes backticks in text placed inside a Slack inline-code span.</summary>
+        private static string SlackInline(string s) => (s ?? "").Replace("`", "'");
+
+        private static string LevelBreakdown(LogSearchIndex.LogPattern p)
+        {
+            var parts = new List<string>();
+            if (p.Error > 0) parts.Add($"{p.Error:N0} ERROR");
+            if (p.Warn > 0) parts.Add($"{p.Warn:N0} WARN");
+            if (p.Info > 0) parts.Add($"{p.Info:N0} INFO");
+            if (p.Debug > 0) parts.Add($"{p.Debug:N0} DEBUG");
+            return parts.Count > 0 ? string.Join(", ", parts) : "";
+        }
+
+        /// <summary>Markdown summary: a section per pattern with a fenced code block for the example.</summary>
+        private static string BuildSummaryMarkdown(List<PatternSummaryItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# Log findings").AppendLine();
+            foreach (var it in items)
+            {
+                var p = it.Pattern;
+                sb.AppendLine($"## {p.DominantLevel}: {p.Template}").AppendLine();
+                sb.AppendLine($"- **Count:** {p.Count:N0} ({LevelBreakdown(p)})");
+                sb.AppendLine($"- **First seen:** {p.FirstSeen:yyyy-MM-dd HH:mm:ss}  **Last seen:** {p.LastSeen:yyyy-MM-dd HH:mm:ss}");
+                if (it.Files != null && it.Files.Count > 0)
+                {
+                    sb.AppendLine($"- **Files ({it.Files.Count}):** {string.Join(", ", it.Files)}");
+                }
+                sb.AppendLine();
+                if (!string.IsNullOrEmpty(it.Example))
+                {
+                    sb.AppendLine("Example:").AppendLine();
+                    sb.AppendLine("```");
+                    sb.AppendLine(it.Example.Replace("\r\n", "\n").TrimEnd());
+                    sb.AppendLine("```");
+                    sb.AppendLine();
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>Plain-text summary: same content, no Markdown syntax; example indented.</summary>
+        private static string BuildSummaryPlain(List<PatternSummaryItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("LOG FINDINGS").AppendLine();
+            foreach (var it in items)
+            {
+                var p = it.Pattern;
+                sb.AppendLine(new string('=', 70));
+                sb.AppendLine($"[{p.DominantLevel}] {p.Template}");
+                sb.AppendLine($"Count: {p.Count:N0} ({LevelBreakdown(p)})");
+                sb.AppendLine($"First seen: {p.FirstSeen:yyyy-MM-dd HH:mm:ss}   Last seen: {p.LastSeen:yyyy-MM-dd HH:mm:ss}");
+                if (it.Files != null && it.Files.Count > 0)
+                {
+                    sb.AppendLine($"Files ({it.Files.Count}): {string.Join(", ", it.Files)}");
+                }
+                if (!string.IsNullOrEmpty(it.Example))
+                {
+                    sb.AppendLine("Example:");
+                    foreach (var line in it.Example.Replace("\r\n", "\n").TrimEnd().Split('\n'))
+                    {
+                        sb.AppendLine("    " + line);
+                    }
+                }
+                sb.AppendLine();
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>HTML summary: a section per pattern with the example in a &lt;pre&gt;&lt;code&gt; block.</summary>
+        private static string BuildSummaryHtml(List<PatternSummaryItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.Append("<div style=\"font-family:Segoe UI,Arial,sans-serif\">");
+            sb.Append("<h1>Log findings</h1>");
+            foreach (var it in items)
+            {
+                var p = it.Pattern;
+                sb.Append($"<h2>{HtmlEscape(p.DominantLevel)}: {HtmlEscape(p.Template)}</h2>");
+                sb.Append($"<p><b>Count:</b> {p.Count:N0} ({HtmlEscape(LevelBreakdown(p))})<br/>");
+                sb.Append($"<b>First seen:</b> {p.FirstSeen:yyyy-MM-dd HH:mm:ss} &nbsp; <b>Last seen:</b> {p.LastSeen:yyyy-MM-dd HH:mm:ss}</p>");
+                if (it.Files != null && it.Files.Count > 0)
+                {
+                    sb.Append($"<p><b>Files ({it.Files.Count}):</b> {HtmlEscape(string.Join(", ", it.Files))}</p>");
+                }
+                if (!string.IsNullOrEmpty(it.Example))
+                {
+                    sb.Append("<pre style=\"background:#f4f4f4;border:1px solid #ddd;padding:8px;");
+                    sb.Append("white-space:pre-wrap;font-family:Consolas,monospace;font-size:12px\"><code>");
+                    sb.Append(HtmlEscape(it.Example.Replace("\r\n", "\n").TrimEnd()));
+                    sb.Append("</code></pre>");
+                }
+            }
+            sb.Append("</div>");
+            return sb.ToString();
+        }
+
+        private static string HtmlEscape(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+        }
+
+        /// <summary>
+        /// Wraps an HTML fragment in the CF_HTML clipboard format (the byte-offset header Windows apps
+        /// like Word/Outlook require for rich paste). Offsets are computed over the UTF-8 byte length.
+        /// </summary>
+        private static string WrapCfHtml(string htmlFragment)
+        {
+            const string header = "Version:0.9\r\nStartHTML:{0:D10}\r\nEndHTML:{1:D10}\r\nStartFragment:{2:D10}\r\nEndFragment:{3:D10}\r\n";
+            const string preFragment = "<html><body><!--StartFragment-->";
+            const string postFragment = "<!--EndFragment--></body></html>";
+
+            // Compute byte offsets. The header itself has a fixed length once formatted (fixed-width fields).
+            int headerLen = System.Text.Encoding.UTF8.GetByteCount(string.Format(header, 0, 0, 0, 0));
+            int startHtml = headerLen;
+            int startFragment = startHtml + System.Text.Encoding.UTF8.GetByteCount(preFragment);
+            int endFragment = startFragment + System.Text.Encoding.UTF8.GetByteCount(htmlFragment);
+            int endHtml = endFragment + System.Text.Encoding.UTF8.GetByteCount(postFragment);
+
+            return string.Format(header, startHtml, endHtml, startFragment, endFragment)
+                 + preFragment + htmlFragment + postFragment;
+        }
         /// </summary>
         private void patternList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
@@ -1545,6 +1836,171 @@ namespace NuixLogReviewer
 
             var ids = pattern.Ids as IList<long> ?? pattern.Ids.ToList();
             showIdsInGrid(ids);
+        }
+
+        /// <summary>
+        /// Expander toggle on a pattern row: computes (on first expand) and shows that row's
+        /// sub-patterns grouped by the current "Expand by" dimension, then toggles the details.
+        /// </summary>
+        private void patternExpand_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(sender is DependencyObject d)) return;
+            var row = FindAncestor<DataGridRow>(d);
+            if (row == null || !(row.Item is LogSearchIndex.LogPattern pattern)) return;
+
+            // Toggle: if already open, just collapse.
+            if (row.DetailsVisibility == Visibility.Visible)
+            {
+                row.DetailsVisibility = Visibility.Collapsed;
+                return;
+            }
+
+            // Compute sub-patterns for the current grouping (recompute if the grouping changed since the
+            // last expand for this row - tracked by comparing a stamped dimension).
+            string dim = SelectedPatternGroupBy();
+            if (pattern.MemberPatterns == null || _memberGroupDimStamp.TryGetValue(pattern, out var stamped) == false || stamped != dim)
+            {
+                pattern.MemberPatterns = ComputeSubPatterns(pattern, dim);
+                _memberGroupDimStamp[pattern] = dim;
+            }
+            row.DetailsVisibility = Visibility.Visible;
+        }
+
+        // Remembers which grouping dimension each pattern's cached MemberPatterns were computed for, so
+        // changing the "Expand by" choice recomputes on the next expand.
+        private readonly Dictionary<LogSearchIndex.LogPattern, string> _memberGroupDimStamp =
+            new Dictionary<LogSearchIndex.LogPattern, string>();
+
+        private string SelectedPatternGroupBy()
+        {
+            return (cmbPatternGroupBy?.SelectedItem as ComboBoxItem)?.Content as string ?? "Worker";
+        }
+
+        /// <summary>
+        /// When the "Expand by" choice changes, collapse all open rows and clear cached sub-patterns so
+        /// the next expand recomputes with the new dimension.
+        /// </summary>
+        private void cmbPatternGroupBy_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (patternList == null) return;
+            _memberGroupDimStamp.Clear();
+            if (_lastPatterns != null)
+            {
+                foreach (var p in _lastPatterns) p.MemberPatterns = null;
+            }
+            // Collapse any open details.
+            foreach (var item in patternList.Items)
+            {
+                if (patternList.ItemContainerGenerator.ContainerFromItem(item) is DataGridRow r)
+                {
+                    r.DetailsVisibility = Visibility.Collapsed;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Groups a pattern's entries into sub-patterns by the chosen dimension, on demand. Reads the
+        /// bucket's entries once from the DB, then buckets by:
+        ///   Worker      -> the worker/restart folder(s) under the job folder (JobIdExtractor.WorkerLabel),
+        ///   Exception   -> the first Java throwable class (LogPatternMasker.FirstExceptionClass),
+        ///   Sub-template-> the first line with volatile tokens masked (a lighter normalization).
+        /// Returns rows ordered by count descending. Bounded to this one pattern's entries.
+        /// </summary>
+        private IReadOnlyList<LogSearchIndex.MemberPattern> ComputeSubPatterns(LogSearchIndex.LogPattern pattern, string dimension)
+        {
+            var empty = new List<LogSearchIndex.MemberPattern>();
+            if (pattern?.Ids == null || pattern.Ids.Count == 0) return empty;
+
+            var groups = new Dictionary<string, (List<long> Ids, int Info, int Warn, int Error, int Debug)>(StringComparer.Ordinal);
+            foreach (var entry in repo.Database.ReadEntries(pattern.Ids))
+            {
+                if (entry == null) continue;
+                string key;
+                switch (dimension)
+                {
+                    case "Exception":
+                        key = LogPatternMasker.FirstExceptionClass(entry.Content) ?? "(no exception)";
+                        break;
+                    case "Sub-template":
+                        key = LightSubTemplate(entry.Content);
+                        break;
+                    case "Worker":
+                    default:
+                        key = JobIdExtractor.WorkerLabel(entry.FilePath);
+                        if (string.IsNullOrEmpty(key)) key = "(unknown)";
+                        break;
+                }
+
+                if (!groups.TryGetValue(key, out var g)) { g = (new List<long>(), 0, 0, 0, 0); }
+                g.Ids.Add(entry.ID);
+                switch ((entry.Level ?? "").ToUpperInvariant())
+                {
+                    case "INFO": g.Info++; break;
+                    case "WARN": g.Warn++; break;
+                    case "ERROR": g.Error++; break;
+                    case "DEBUG": g.Debug++; break;
+                }
+                groups[key] = g;
+            }
+
+            var result = new List<LogSearchIndex.MemberPattern>(groups.Count);
+            foreach (var kv in groups)
+            {
+                result.Add(new LogSearchIndex.MemberPattern
+                {
+                    Label = kv.Key,
+                    Template = "",
+                    Count = kv.Value.Ids.Count,
+                    Info = kv.Value.Info,
+                    Warn = kv.Value.Warn,
+                    Error = kv.Value.Error,
+                    Debug = kv.Value.Debug,
+                    Ids = kv.Value.Ids,
+                });
+            }
+            result.Sort((a, b) => b.Count.CompareTo(a.Count));
+            return result;
+        }
+
+        // Volatile-token regexes for the "Sub-template" grouping: a lighter normalization than the full
+        // pattern masker, so entries that collapsed to one pattern can still split by their finer shape.
+        private static readonly System.Text.RegularExpressions.Regex _subHex =
+            new System.Text.RegularExpressions.Regex(@"[0-9a-fA-F]{6,}|\b\d+\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>First line of the content with hex/numeric tokens blanked, as a coarse sub-template key.</summary>
+        private static string LightSubTemplate(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return "";
+            int nl = content.IndexOfAny(new[] { '\r', '\n' });
+            string first = nl >= 0 ? content.Substring(0, nl) : content;
+            return _subHex.Replace(first, "#");
+        }
+
+        /// <summary>
+        /// Double-clicking a sub-pattern (member) row drills the main grid down to exactly that
+        /// member's entries - the finer-grained analog of the top-level pattern drill-down. The row is
+        /// a Border in the sub-pattern ItemsControl whose DataContext is the MemberPattern.
+        /// </summary>
+        private void patternMemberRow_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount != 2) return; // drill only on double-click
+            if (!(sender is FrameworkElement fe) || !(fe.DataContext is LogSearchIndex.MemberPattern member) || member.Ids == null)
+            {
+                return;
+            }
+            var ids = member.Ids as IList<long> ?? member.Ids.ToList();
+            showIdsInGrid(ids);
+            e.Handled = true; // don't bubble to the outer patternList double-click (would re-drill the parent)
+        }
+
+        /// <summary>Walks up the visual tree to the nearest ancestor of type T (or null).</summary>
+        private static T FindAncestor<T>(DependencyObject from) where T : DependencyObject
+        {
+            while (from != null && !(from is T))
+            {
+                from = System.Windows.Media.VisualTreeHelper.GetParent(from);
+            }
+            return from as T;
         }
 
         /// <summary>

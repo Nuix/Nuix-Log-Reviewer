@@ -36,5 +36,39 @@ namespace NuixLogReviewer.LogRepository
 
         /// <summary>True if the path is within a worker job folder.</summary>
         public static bool IsWorkerLog(string filePath) => Extract(filePath) != null;
+
+        // The worker (and optional restart) folder(s) that sit BELOW the "job-<hex>" folder, e.g.
+        // ".../job-<hex>/engine 01a/worker-1/nuix.log" -> "engine 01a/worker-1". This is the per-worker
+        // attribution the job id alone doesn't carry, used to answer "one worker, some, or all?".
+        private static readonly Regex JobFolderRegex =
+            new Regex(@"job-[a-f0-9]{32}", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Returns a human-readable worker label derived from the path: the folder segment(s) between
+        /// the "job-&lt;hex&gt;" folder and the log file (e.g. "engine 01a/worker-1"). Falls back to the
+        /// containing folder name for non-job logs, or "" if none can be derived. Normalizes separators
+        /// to '/'. Used to group a pattern's entries by which worker produced them.
+        /// </summary>
+        public static string WorkerLabel(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath)) return "";
+            string norm = filePath.Replace('\\', '/');
+            var m = JobFolderRegex.Match(norm);
+            if (m.Success)
+            {
+                int afterJob = m.Index + m.Length;
+                // Take everything after the job folder, drop the trailing file name.
+                string tail = norm.Substring(afterJob).TrimStart('/');
+                int lastSlash = tail.LastIndexOf('/');
+                string folders = lastSlash > 0 ? tail.Substring(0, lastSlash) : "";
+                if (folders.Length > 0) return folders;
+            }
+            // Non-worker log (or job folder directly holds the file): use the immediate parent folder.
+            int fileSlash = norm.LastIndexOf('/');
+            if (fileSlash <= 0) return "";
+            string parentPath = norm.Substring(0, fileSlash);
+            int parentSlash = parentPath.LastIndexOf('/');
+            return parentSlash >= 0 ? parentPath.Substring(parentSlash + 1) : parentPath;
+        }
     }
 }
