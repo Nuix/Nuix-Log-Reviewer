@@ -24,8 +24,9 @@ namespace NuixLogReviewer.LogRepository
         public static string TimestampExpression
         {
             // The timezone offset (e.g. "+0000") is optional: classic Nuix Workstation logs include
-            // it, but Automate logs (scheduler/engine-server/engine job/init) do not.
-            get { return @"^(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)(?:\s+(?<tz>[\+\-]?\d{4}))?\s+"; }
+            // it, but Automate logs (scheduler/engine-server/engine job/init) do not. The millisecond
+            // separator may be '.' (Nuix/Automate) or ',' (Derby server logs use "HH:mm:ss,fff").
+            get { return @"^(?<timestamp>20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[.,]\d+)(?:\s+(?<tz>[\+\-]?\d{4}))?\s+"; }
         }
 
         public static string ChannelExpression
@@ -67,6 +68,17 @@ namespace NuixLogReviewer.LogRepository
         {
             LineParseRegex = new Regex(LogLineExpression, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         }
+
+        // Some Nuix log messages embed raw control characters - notably NUL (\0) used as a delimiter
+        // around markers like "\0Unextractable-Object\0". An embedded NUL is treated as a C-string
+        // terminator when SQLite (System.Data.SQLite) binds the value, silently truncating the stored
+        // Content at the first NUL (and it isn't meaningful text anyway). Strip NUL and other C0 control
+        // chars except tab (\t), newline (\n) and carriage return (\r), which multi-line content needs.
+        private static readonly Regex ControlChars = new Regex(@"[\x00-\x08\x0B\x0C\x0E-\x1F]", RegexOptions.Compiled);
+
+        /// <summary>Removes embedded control chars (NUL etc.) that would truncate or corrupt stored text.</summary>
+        private static string SanitizeContent(string s) =>
+            string.IsNullOrEmpty(s) ? s : ControlChars.Replace(s, "");
 
         public string FilePath { get; private set; }
 
@@ -137,7 +149,7 @@ namespace NuixLogReviewer.LogRepository
                             {
                                 if (current != null)
                                 {
-                                    current.Content = currentContent.ToString().Trim();
+                                    current.Content = SanitizeContent(currentContent.ToString().Trim());
                                     currentContent.Clear();
                                     parsedQueue.Add(current);
                                 }
@@ -153,6 +165,9 @@ namespace NuixLogReviewer.LogRepository
                                 // do not). Parse with the offset when present so the instant is
                                 // preserved; otherwise treat the timestamp as local/unspecified.
                                 string timestampText = parsed.Groups["timestamp"].Value;
+                                // Derby logs use a comma as the millisecond separator ("HH:mm:ss,fff");
+                                // normalize to a dot so the single ParseExact format handles both.
+                                timestampText = timestampText.Replace(',', '.');
                                 if (parsed.Groups["tz"].Success && parsed.Groups["tz"].Value.Length > 0)
                                 {
                                     current.TimeStamp = DateTime.ParseExact(
@@ -198,7 +213,7 @@ namespace NuixLogReviewer.LogRepository
                     // Make sure to kick out the final entry as well!
                     if (current != null)
                     {
-                        current.Content = currentContent.ToString().Trim();
+                        current.Content = SanitizeContent(currentContent.ToString().Trim());
                         currentContent.Clear();
                         parsedQueue.Add(current);
                     }
