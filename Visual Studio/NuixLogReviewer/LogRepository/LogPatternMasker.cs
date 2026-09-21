@@ -77,6 +77,12 @@ namespace NuixLogReviewer.LogRepository
                 // Automate server ping/engine lines. Without this each line's unique timestamp would
                 // fragment otherwise-identical messages into distinct templates.
                 new MaskRule(@"\b\d{8}_\d{6}_\d{3}\b", "<TS>"),
+                // Slack object ids: a type-letter prefix (user/channel/team/DM/group/bot/enterprise)
+                // followed by uppercase base-36 chars. These vary per user/channel and otherwise
+                // fragment messages like "Unable to retrieve Slack user <id>". Require a length that
+                // ordinary all-caps words won't reach, and at least one digit to avoid masking plain
+                // uppercase tokens. No literal id is embedded here (privacy).
+                new MaskRule(@"\b[UCTDGBWE](?=[A-Z0-9]*[0-9])[A-Z0-9]{8,}\b", "<SLACKID>"),
                 // Short hex identifiers (engine/job ids). Require at least one digit so real words
                 // (e.g. "deadbeef" is unlikely, but "facade"/"decade" won't match) are left alone.
                 new MaskRule(@"\b(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{6,}\b", "<ID>"),
