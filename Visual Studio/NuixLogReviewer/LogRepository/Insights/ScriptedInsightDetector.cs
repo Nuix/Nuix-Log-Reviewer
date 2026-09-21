@@ -243,6 +243,7 @@ namespace NuixLogReviewer.LogRepository.Insights
             {
                 case "info": return InsightSeverity.Info;
                 case "warning": case "warn": return InsightSeverity.Warning;
+                case "critical": case "crit": return InsightSeverity.Critical;
                 default: return InsightSeverity.Notice;
             }
         }

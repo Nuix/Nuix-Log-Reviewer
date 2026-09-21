@@ -40,6 +40,11 @@ namespace NuixLogReviewer.LogRepository.Insights
         public double RampUpFactor = 3.0;
         /// <summary>Minimum errors in the window before ramp-up/onset detectors bother.</summary>
         public int OnsetMinErrors = 30;
+
+        /// <summary>GC pressure is notable when peak "percentage time" reaches at least this (percent).</summary>
+        public double GcPeakPercent = 10.0;
+        /// <summary>Throttling/retry is notable when a retry pattern occurs at least this many times.</summary>
+        public int ThrottleMinRetries = 50;
     }
 
     /// <summary>Error/warn spikes in the time-series: "something went wrong HERE".</summary>
@@ -355,5 +360,121 @@ namespace NuixLogReviewer.LogRepository.Insights
                 PositionTicks = onset.Value.Ticks,
             };
         }
+    }
+
+    /// <summary>Out-of-memory / heap-exhaustion errors - always worth surfacing when present.</summary>
+    public sealed class OutOfMemoryDetector : IInsightDetector
+    {
+        public string Name => "Out of memory";
+        public bool ValidateQueries => false;
+
+        // Substrings identifying JVM memory-exhaustion messages (case-insensitive).
+        private static readonly string[] Signals =
+        {
+            "OutOfMemoryError", "Java heap space", "GC overhead limit exceeded",
+            "unable to create new native thread", "Direct buffer memory", "Metaspace",
+        };
+
+        public IEnumerable<Insight> Analyze(InsightContext ctx)
+        {
+            foreach (var p in ctx.Patterns)
+            {
+                if (string.IsNullOrEmpty(p.Template)) continue;
+                if (!Signals.Any(sig => p.Template.IndexOf(sig, System.StringComparison.OrdinalIgnoreCase) >= 0)) continue;
+
+                yield return new Insight
+                {
+                    Severity = InsightSeverity.Critical,
+                    Title = "Out-of-memory error",
+                    Detail = $"{p.Count:N0}x: \"{Clip(p.Template)}\"",
+                    Query = PatternQuery.DrillDownQuery(p.MemberTemplates ?? new[] { p.Template }),
+                    PositionEntryId = p.Ids != null && p.Ids.Count > 0 ? p.Ids[0] : (long?)null,
+                };
+            }
+        }
+
+        private static string Clip(string s) =>
+            string.IsNullOrEmpty(s) ? "" : (s.Length > 120 ? s.Substring(0, 120) + "\u2026" : s);
+    }
+
+    /// <summary>Excessive time spent in garbage collection (GC thrashing / memory pressure).</summary>
+    public sealed class GcPressureDetector : IInsightDetector
+    {
+        private readonly InsightThresholds _t;
+        public GcPressureDetector(InsightThresholds t) { _t = t; }
+        public string Name => "GC pressure";
+        public bool ValidateQueries => false;
+
+        public IEnumerable<Insight> Analyze(InsightContext ctx)
+        {
+            if (!ctx.GcPeakPercent.HasValue) yield break;               // no GC-monitor data
+            if (ctx.GcPeakPercent.Value < _t.GcPeakPercent) yield break; // healthy
+
+            string total = ctx.GcMaxTotalSeconds.HasValue ? $", peak cumulative GC time ~{ctx.GcMaxTotalSeconds.Value:N0}s" : "";
+            yield return new Insight
+            {
+                Severity = InsightSeverity.Warning,
+                Title = $"High GC time (peak ~{ctx.GcPeakPercent.Value:N1}%)",
+                Detail = $"The GC monitor reported spending up to ~{ctx.GcPeakPercent.Value:N1}% of time in garbage collection{total} - a sign of memory pressure. Consider more heap or reduced concurrency.",
+                Query = "content:\"GC PS\"",
+            };
+        }
+    }
+
+    /// <summary>Disk-space messages (uses the disk_space classifier flag already computed per entry).</summary>
+    public sealed class DiskSpaceDetector : IInsightDetector
+    {
+        public string Name => "Disk space";
+        public bool ValidateQueries => false;
+
+        public IEnumerable<Insight> Analyze(InsightContext ctx)
+        {
+            var flag = ctx.Flags.FirstOrDefault(f =>
+                string.Equals(f.Name, "disk_space", System.StringComparison.OrdinalIgnoreCase));
+            if (flag == null || flag.Count <= 0) yield break;
+
+            yield return new Insight
+            {
+                Severity = InsightSeverity.Warning,
+                Title = "Disk-space messages",
+                Detail = $"{flag.Count:N0} disk-space message(s) were logged - low or exhausted disk can stall or fail processing.",
+                Query = "flag:disk_space",
+            };
+        }
+    }
+
+    /// <summary>High volume of retry/throttle messages (e.g. an upstream API rate-limiting the run).</summary>
+    public sealed class ThrottlingDetector : IInsightDetector
+    {
+        private readonly InsightThresholds _t;
+        public ThrottlingDetector(InsightThresholds t) { _t = t; }
+        public string Name => "Throttling / retries";
+        public bool ValidateQueries => false;
+
+        public IEnumerable<Insight> Analyze(InsightContext ctx)
+        {
+            // Retry/throttle lines fold into pattern template(s) like
+            // "Retrying attempt #/# in #U due to exception: Response throttled by ...". Surface any
+            // template that reads as a retry AND crosses the volume threshold, aggregated by template.
+            foreach (var p in ctx.Patterns)
+            {
+                if (string.IsNullOrEmpty(p.Template)) continue;
+                bool isRetry = p.Template.IndexOf("Retrying attempt", System.StringComparison.OrdinalIgnoreCase) >= 0
+                            || p.Template.IndexOf("throttl", System.StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!isRetry || p.Count < _t.ThrottleMinRetries) continue;
+
+                yield return new Insight
+                {
+                    Severity = InsightSeverity.Warning,
+                    Title = $"Heavy ret/throttle activity ({p.Count:N0}x)",
+                    Detail = $"{p.Count:N0} retry/throttle messages: \"{Clip(p.Template)}\". An upstream service (or resource) is likely rate-limiting or failing intermittently.",
+                    Query = PatternQuery.DrillDownQuery(p.MemberTemplates ?? new[] { p.Template }),
+                    PositionEntryId = p.Ids != null && p.Ids.Count > 0 ? p.Ids[0] : (long?)null,
+                };
+            }
+        }
+
+        private static string Clip(string s) =>
+            string.IsNullOrEmpty(s) ? "" : (s.Length > 120 ? s.Substring(0, 120) + "\u2026" : s);
     }
 }

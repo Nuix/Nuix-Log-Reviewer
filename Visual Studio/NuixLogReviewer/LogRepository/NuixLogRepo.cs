@@ -327,6 +327,11 @@ namespace NuixLogReviewer.LogRepository
 
             var ctx = new Insights.InsightContext(summary, fileDisplay, jobs, patterns, timeline);
 
+            // GC-pressure signal: the actual "percentage time" is masked out of pattern templates, so
+            // read the GC-monitor entries (folded into GC patterns) and record the peak percentage and
+            // max cumulative total-time. Bounded to the GC pattern buckets; skipped if none present.
+            PopulateGcStats(ctx, patterns);
+
             var thresholds = new Insights.InsightThresholds();
             var detectors = new List<Insights.IInsightDetector>
             {
@@ -337,6 +342,10 @@ namespace NuixLogReviewer.LogRepository
                 new Insights.SilenceGapDetector(thresholds),
                 new Insights.ErrorRampUpDetector(thresholds),
                 new Insights.ErrorOnsetDetector(thresholds),
+                new Insights.OutOfMemoryDetector(),
+                new Insights.GcPressureDetector(thresholds),
+                new Insights.DiskSpaceDetector(),
+                new Insights.ThrottlingDetector(thresholds),
             };
             // Append user-supplied scripted detectors (Configuration/InsightScripts/*.js). Reloaded each
             // Analyze so edits are picked up without a restart; failures are logged and skipped.
@@ -347,6 +356,60 @@ namespace NuixLogReviewer.LogRepository
             // Built-in detectors produce trusted, compiler-built queries, but validate anyway so a bad
             // one degrades gracefully (jump disabled) rather than erroring on click - cheap (parse only).
             return engine.Run(ctx, q => SearchIndex.TryValidateQuery(q));
+        }
+
+        // Matches Nuix GC-monitor lines: "GC PS MarkSweep: collections:N, total time:Xs, percentage time:P%".
+        // total time may be "0s", "12s", "1m 3s" etc.; we capture the leading seconds-ish number loosely.
+        private static readonly System.Text.RegularExpressions.Regex GcPercentRegex =
+            new System.Text.RegularExpressions.Regex(@"percentage time:\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        private static readonly System.Text.RegularExpressions.Regex GcTotalSecRegex =
+            new System.Text.RegularExpressions.Regex(@"total time:\s*([0-9]+(?:\.[0-9]+)?)\s*s\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Populates <see cref="Insights.InsightContext.GcPeakPercent"/> / GcMaxTotalSeconds by reading
+        /// the GC-monitor entries (identified by GC-pattern buckets) and parsing their "percentage time"
+        /// and "total time" values, which the pattern templates mask away. No-op if no GC lines exist.
+        /// </summary>
+        private void PopulateGcStats(Insights.InsightContext ctx, IList<LogSearchIndex.LogPattern> patterns)
+        {
+            if (ctx == null || patterns == null) return;
+
+            // Collect ids from patterns that look like GC-monitor lines.
+            var gcIds = new List<long>();
+            foreach (var p in patterns)
+            {
+                if (string.IsNullOrEmpty(p.Template)) continue;
+                bool looksGc = p.Template.IndexOf("GC PS", System.StringComparison.OrdinalIgnoreCase) >= 0
+                            || p.Template.IndexOf("percentage time", System.StringComparison.OrdinalIgnoreCase) >= 0;
+                if (looksGc && p.Ids != null) gcIds.AddRange(p.Ids);
+            }
+            if (gcIds.Count == 0) return;
+
+            double peakPct = 0; double maxTotalSec = 0; bool any = false;
+            foreach (var entry in Database.ReadEntries(gcIds))
+            {
+                if (entry?.Content == null) continue;
+                var mp = GcPercentRegex.Match(entry.Content);
+                if (mp.Success && double.TryParse(mp.Groups[1].Value,
+                        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pct))
+                {
+                    any = true;
+                    if (pct > peakPct) peakPct = pct;
+                }
+                var mt = GcTotalSecRegex.Match(entry.Content);
+                if (mt.Success && double.TryParse(mt.Groups[1].Value,
+                        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec))
+                {
+                    if (sec > maxTotalSec) maxTotalSec = sec;
+                }
+            }
+            if (any)
+            {
+                ctx.GcPeakPercent = peakPct;
+                ctx.GcMaxTotalSeconds = maxTotalSec;
+            }
         }
 
         public long? FindEntryIdAtOrBefore(string query, long ticks)

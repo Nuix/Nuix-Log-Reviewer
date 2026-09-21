@@ -10,6 +10,7 @@ namespace NuixLogReviewer.LogRepository.Insights
         Info = 0,
         Notice = 1,
         Warning = 2,
+        Critical = 3,
     }
 
     /// <summary>
@@ -103,6 +104,16 @@ namespace NuixLogReviewer.LogRepository.Insights
             Patterns = (patterns ?? Enumerable.Empty<LogSearchIndex.LogPattern>()).ToList();
             Timeline = timeline;
         }
+
+        /// <summary>
+        /// Peak GC "percentage time" observed across the run (0..100), or null if no GC-monitor lines
+        /// were found. Surfaced by an extra pass in BuildInsights because the actual value is masked out
+        /// of the pattern templates. Drives the GC-pressure detector.
+        /// </summary>
+        public double? GcPeakPercent { get; set; }
+
+        /// <summary>Max cumulative GC "total time" (seconds) observed, or null if unknown.</summary>
+        public double? GcMaxTotalSeconds { get; set; }
 
         public sealed class FlagStat { public string Name; public int Count; }
         public sealed class FileStat { public string Path; public string DisplayName; public int Count; }
