@@ -87,6 +87,38 @@ namespace NuixLogReviewer.LogRepository
             FilePath = filePath;
         }
 
+        /// <summary>Number of leading non-blank lines sampled to detect the file's format.</summary>
+        private const int FormatSampleLines = 20;
+
+        /// <summary>
+        /// Detects this file's line format by sampling its first <see cref="FormatSampleLines"/> non-blank
+        /// lines and choosing whichever known format matches the most of them (see
+        /// <see cref="LogLineFormats.Detect"/>). A cheap separate read of only the sample; falls back to
+        /// the Nuix format when nothing matches, so unrecognized files behave as before.
+        /// </summary>
+        private LogLineFormat DetectFileFormat()
+        {
+            var sample = new List<string>(FormatSampleLines);
+            try
+            {
+                using (var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.SequentialScan))
+                using (var sr = new StreamReader(fs, Encoding.UTF8, true))
+                {
+                    string l;
+                    while (sample.Count < FormatSampleLines && (l = sr.ReadLine()) != null)
+                    {
+                        if (l.Length > 0) sample.Add(l);
+                    }
+                }
+            }
+            catch
+            {
+                // If sampling fails, fall through to the default (Nuix) format.
+            }
+            return LogLineFormats.Detect(sample);
+        }
+
         public IEnumerator<NuixLogEntry> GetEnumerator()
         {
             FileInfo fileInfo = new FileInfo(FilePath);
@@ -95,7 +127,10 @@ namespace NuixLogReviewer.LogRepository
                 yield break;
             }
 
-            CultureInfo culture = new CultureInfo("en-US");
+            // Detect this file's line format once by sampling its first non-blank lines, so different
+            // producers (Nuix/Automate/Derby vs. Adaptive container logs) never cross-match. The whole
+            // file is then parsed with the winning format.
+            LogLineFormat format = DetectFileFormat();
 
             int streamReaderBufferSize = 1024 * 1024 * 5;
 
@@ -142,9 +177,12 @@ namespace NuixLogReviewer.LogRepository
                         // with a 20xx value, we can assume it must be content.  If it does start with 20xx then we do the deeper analysis to determine
                         // whether this is actually a new log entry, parse the fields, etc.  This allows for skipping more costly processing in some
                         // instaces and it makes the parsing process a bit faster!
+                        // Adaptive container logs also start with a timestamp beginning "20", so this
+                        // coarse gate still applies to every supported format; the detected format's
+                        // regex does the real match.
                         if (line.StartsWith("20"))
                         {
-                            Match parsed = LineParseRegex.Match(line);
+                            Match parsed = format.Header.Match(line);
                             if (parsed.Success)
                             {
                                 if (current != null)
@@ -155,58 +193,27 @@ namespace NuixLogReviewer.LogRepository
                                 }
 
                                 current = new NuixLogEntry();
-
                                 current.LineNumber = lineNumber;
                                 current.FilePath = FilePath;
                                 current.FileName = Path.GetFileName(FilePath);
                                 currentContent.AppendLine(parsed.Groups["content"].Value);
 
-                                // Timezone offset is optional (classic logs have it, Automate logs
-                                // do not). Parse with the offset when present so the instant is
-                                // preserved; otherwise treat the timestamp as local/unspecified.
-                                string timestampText = parsed.Groups["timestamp"].Value;
-                                // Derby logs use a comma as the millisecond separator ("HH:mm:ss,fff");
-                                // normalize to a dot so the single ParseExact format handles both.
-                                timestampText = timestampText.Replace(',', '.');
-                                if (parsed.Groups["tz"].Success && parsed.Groups["tz"].Value.Length > 0)
-                                {
-                                    current.TimeStamp = DateTime.ParseExact(
-                                        timestampText + " " + parsed.Groups["tz"].Value,
-                                        "yyyy-MM-dd HH:mm:ss.fff zzz", culture);
-                                }
-                                else
-                                {
-                                    current.TimeStamp = DateTime.ParseExact(
-                                        timestampText, "yyyy-MM-dd HH:mm:ss.fff", culture);
-                                }
-
-                                current.Channel = parsed.Groups["channel"].Value.Trim();
-
-                                // Elapsed is optional (absent from Automate logs).
-                                if (parsed.Groups["elapsed"].Success && parsed.Groups["elapsed"].Value.Length > 0)
-                                {
-                                    current.Elapsed = TimeSpan.FromMilliseconds(long.Parse(parsed.Groups["elapsed"].Value, culture));
-                                }
-                                else
-                                {
-                                    current.Elapsed = TimeSpan.Zero;
-                                }
-
-                                current.Level = String.Intern(parsed.Groups["level"].Value.Trim()); // Intern since we know there is a small set of possible values
-                                current.Source = parsed.Groups["source"].Value.Trim();
+                                // The format knows how to populate timestamp/level/source/channel/elapsed
+                                // from its own capture groups (Nuix tz/elapsed, Adaptive level mapping, ...).
+                                format.Apply(parsed, current);
                             }
                             else
                             {
-                                // This line from the log should be content on a new line from
-                                // a previously encountered log entry
-                                currentContent.AppendLine(line);
+                                // Not a new-entry header in this file's format => continuation content
+                                // (strip any per-line transport prefix, e.g. the K8s timestamp).
+                                currentContent.AppendLine(format.CleanContinuation(line));
                             }
                         }
                         else
                         {
                             // This line from the log should be content on a new line from
                             // a previously encountered log entry
-                            currentContent.AppendLine(line);
+                            currentContent.AppendLine(format.CleanContinuation(line));
                         }
                     }
 
