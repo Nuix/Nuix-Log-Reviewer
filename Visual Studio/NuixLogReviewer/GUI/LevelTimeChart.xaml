@@ -44,7 +44,7 @@
              small ERROR spike) stay visible next to a huge one (e.g. a throttling wall). -->
         <CheckBox x:Name="chkLogScale" Content="Log" HorizontalAlignment="Right" VerticalAlignment="Top"
                   Margin="0,1,4,0" FontSize="10" Foreground="#FF555555" Background="#CCFFFFFF"
-                  Click="chkLogScale_Click"
+                  IsChecked="True" Click="chkLogScale_Click"
                   ToolTip="Log-scale the Y axis. Heights become log-compressed (proportional per level), so small/rare buckets stay visible next to very tall ones."/>
     </Grid>
 </UserControl>

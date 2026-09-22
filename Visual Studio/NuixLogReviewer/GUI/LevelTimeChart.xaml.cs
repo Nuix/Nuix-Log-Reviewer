@@ -45,8 +45,8 @@ namespace NuixLogReviewer.GUI
         private double _dragStartX;
         // When true, bar heights are log-compressed (see redraw): height ~ log(1+total), split across
         // levels by proportion. Preserves the stacked INFO/WARN/ERROR look while keeping small buckets
-        // visible next to very tall ones. Toggled by the corner "Log" checkbox.
-        private bool _logScale;
+        // visible next to very tall ones. Toggled by the corner "Log" checkbox (default on; see XAML).
+        private bool _logScale = true;
 
         // Remembered so they can be re-applied on resize / redraw.
         private long? _markerTicks;
