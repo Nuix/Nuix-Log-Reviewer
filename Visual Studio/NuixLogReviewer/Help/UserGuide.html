@@ -202,7 +202,7 @@ job:job-abcdef0123456789abcdef0123456789 AND level:error</code></pre>
       <li><strong>Drag</strong> horizontally to zoom the search to that time window.</li>
       <li><strong>Click</strong> to scroll the grid to the nearest event at or before that time (doesn't change the search).</li>
       <li><strong>Hover</strong> for a timestamp readout. A marker shows the selected row's time; a shaded band shows the currently-visible rows.</li>
-      <li><strong>Log</strong> toggle (top-right) log-compresses bar heights so small/rare buckets stay visible next to a very tall one (e.g. a spike of errors next to a wall of retries).</li>
+      <li><strong>Log</strong> toggle (top-right, <em>on by default</em>) log-compresses bar heights so small/rare buckets stay visible next to a very tall one (e.g. a spike of errors next to a wall of retries). Uncheck it for linear heights when you care about relative volume.</li>
       <li><strong>Job lanes</strong> — when Jobs are computed and "Show on timeline" is on, worker job lifespans are drawn as brackets above the bars; selecting a job in the Jobs tab emphasizes its bracket.</li>
     </ul>
   </section>
@@ -296,6 +296,7 @@ EXCEPTIONS=on</code></pre>
   }
 })</code></pre>
     <p>The <code>entry</code> exposes read-only <code>content</code>, <code>source</code>, <code>level</code>, <code>channel</code>, <code>filePath</code>, <code>fileName</code>, <code>timeStamp</code> (ISO string), <code>elapsedMs</code>, and <code>lineNumber</code>. Scripts run in a sandbox (no filesystem/network, time- and statement-limited); a misbehaving script is disabled for the session and reported. Flags become searchable as <code>flag:&lt;name&gt;</code>.</p>
+    <p>The app ships <code>adaptive_security.js</code>, which tags common Adaptive Security service failure modes: <code>adaptive_state_transition</code>, <code>adaptive_enrich_failure</code>, <code>adaptive_es_bulk_failure</code>, <code>adaptive_kafka_topic</code>, and <code>adaptive_kafka_poll</code>. Edit or copy it as a template for your own service signals.</p>
 
     <h3 id="ext-insights">Scripted insights</h3>
     <p>Drop a <code>.js</code> file in <code>Configuration\InsightScripts\</code> (see the shipped <code>example_insight.js</code>). The script exposes <code>analyze(ctx)</code> returning an array of findings:</p>
