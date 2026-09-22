@@ -24,6 +24,50 @@ namespace NuixLogReviewer.LogRepository
 
         public static string RepoRootDirectory { get; set; }
 
+        /// <summary>
+        /// Best-effort sweep of orphaned temp-repo folders left by previous sessions that didn't shut
+        /// down cleanly (crash / kill / power loss), since <see cref="DisposeRepo"/> only runs on a normal
+        /// exit or a new load. Called at startup BEFORE the process creates its own repo, so every
+        /// existing subfolder under <see cref="RepoRootDirectory"/> is by definition from a prior run.
+        ///
+        /// To stay safe if another instance happens to be running concurrently, folders modified within
+        /// <paramref name="minAgeMinutes"/> minutes are skipped (a live session writes to its folder).
+        /// Returns the number of folders removed. Never throws.
+        /// </summary>
+        public static int CleanupOrphanedRepos(int minAgeMinutes = 10)
+        {
+            int removed = 0;
+            try
+            {
+                string root = RepoRootDirectory;
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) { return 0; }
+
+                DateTime cutoff = DateTime.UtcNow.AddMinutes(-Math.Abs(minAgeMinutes));
+                foreach (string dir in Directory.EnumerateDirectories(root))
+                {
+                    try
+                    {
+                        // Skip folders touched recently - a concurrently-running instance's live repo.
+                        DateTime touched = Directory.GetLastWriteTimeUtc(dir);
+                        if (touched > cutoff) { continue; }
+
+                        Directory.Delete(dir, true);
+                        removed++;
+                    }
+                    catch
+                    {
+                        // A folder may be locked by a live instance or mid-delete; skip it. The next
+                        // startup will retry. Best-effort by design.
+                    }
+                }
+            }
+            catch
+            {
+                // Enumerating the root failed (missing/unwritable); nothing to clean.
+            }
+            return removed;
+        }
+
         public bool RepoDisposed { get; private set; }
 
         public string RepoDirectory
