@@ -39,5 +39,12 @@
         <!-- Placeholder / loading text shown when there is no data or a computation is in flight. -->
         <TextBlock x:Name="lblPlaceholder" Text="" HorizontalAlignment="Center" VerticalAlignment="Center"
                    Foreground="Gray" IsHitTestVisible="False"/>
+
+        <!-- Log-Y toggle, pinned to the top-right. Log-compresses bar heights so rare buckets (e.g. a
+             small ERROR spike) stay visible next to a huge one (e.g. a throttling wall). -->
+        <CheckBox x:Name="chkLogScale" Content="Log" HorizontalAlignment="Right" VerticalAlignment="Top"
+                  Margin="0,1,4,0" FontSize="10" Foreground="#FF555555" Background="#CCFFFFFF"
+                  Click="chkLogScale_Click"
+                  ToolTip="Log-scale the Y axis. Heights become log-compressed (proportional per level), so small/rare buckets stay visible next to very tall ones."/>
     </Grid>
 </UserControl>

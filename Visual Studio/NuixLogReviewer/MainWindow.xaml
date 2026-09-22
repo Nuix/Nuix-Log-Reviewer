@@ -152,6 +152,12 @@
                         <MenuItem Header="Open Configuration _Folder" Name="menuOpenConfigFolder" Click="menuOpenConfigFolder_Click"
                                   ToolTip="Open the folder containing the configuration files (classifier scripts, LogPatterns.config, ClassifierVisibility.config, saved searches)."/>
                     </MenuItem>
+                    <MenuItem Header="_Help">
+                        <MenuItem Header="_User Guide" Name="menuUserGuide" Click="menuUserGuide_Click"
+                                  ToolTip="Open the HTML user guide (features, search fields, configuration, and extensibility) in your browser."/>
+                        <Separator/>
+                        <MenuItem Header="_About" Name="menuAbout" Click="menuAbout_Click"/>
+                    </MenuItem>
                 </Menu>
             </DockPanel>
         </Border>

@@ -94,6 +94,9 @@ namespace NuixLogReviewer
 
             // Tell NuixLogRepo where it can create its temp resources
             NuixLogRepo.RepoRootDirectory = System.IO.Path.Combine(appDir, "TempRepos");
+            // Sweep temp-repo folders orphaned by previous sessions that didn't exit cleanly (crash/kill).
+            // Done before creating our own repo, so we never touch this session's folder. Best-effort.
+            NuixLogRepo.CleanupOrphanedRepos();
             repo = new NuixLogRepo();
 
             levelChart.TimeRangeSelected += levelChart_TimeRangeSelected;
@@ -385,6 +388,7 @@ namespace NuixLogReviewer
             "engine.*-job.*.log*",          // Automate engine per-job logs
             "engine.*-init.log*",           // Automate engine init logs
             "derby-server*.log*",           // Derby network server logs (structured; "HH:mm:ss,fff")
+            "adaptive-prod-*.txt",          // Adaptive Security container logs (K8s-prefixed .txt)
         };
 
         /// <summary>
@@ -744,6 +748,41 @@ namespace NuixLogReviewer
             }
         }
 
+        /// <summary>Opens the bundled HTML user guide (Help/UserGuide.html next to the exe) in the default browser.</summary>
+        private void menuUserGuide_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(ConfigPaths.AppDirectory, "Help", "UserGuide.html");
+                if (!System.IO.File.Exists(path))
+                {
+                    MessageBox.Show("Could not find the user guide:\n" + path);
+                    return;
+                }
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true, // let the OS open it in the default browser
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not open the user guide:\n" + ex.Message);
+            }
+        }
+
+        /// <summary>Shows a short About dialog with the app name and version.</summary>
+        private void menuAbout_Click(object sender, RoutedEventArgs e)
+        {
+            string version = System.Reflection.Assembly.GetEntryAssembly()?.GetName()?.Version?.ToString() ?? "";
+            MessageBox.Show(
+                "Nuix Log Reviewer" + (version.Length > 0 ? "\nVersion " + version : "") +
+                "\n\nTriage Nuix, Automate, and Derby logs: search, visualize, group into patterns, and surface insights." +
+                "\n\nSee Help \u2039 User Guide for details.",
+                "About Nuix Log Reviewer",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
         /// <summary>
         /// Session set of classifier flags currently hidden from the view. Seeded from
         /// ClassifierVisibility.config defaults on each load, then toggled by the eye buttons.
@@ -1069,7 +1108,16 @@ namespace NuixLogReviewer
         /// <param name="e"></param>
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            repo.DisposeRepo();
+            // Best-effort cleanup of this session's temp repo; never let a cleanup failure block/close-crash
+            // the app. Anything left behind is swept on the next startup (CleanupOrphanedRepos).
+            try
+            {
+                repo?.DisposeRepo();
+            }
+            catch
+            {
+                // Ignore - the startup sweep is the safety net.
+            }
         }
 
         // ===================== Insights tab =====================

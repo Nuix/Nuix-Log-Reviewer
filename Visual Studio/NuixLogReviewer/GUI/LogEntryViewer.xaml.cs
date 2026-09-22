@@ -21,6 +21,9 @@ namespace NuixLogReviewer.GUI
     /// </summary>
     public partial class LogEntryViewer : UserControl
     {
+        // The entry currently shown, so the Copy Log Line button can reconstruct its full line.
+        private NuixLogEntry _current;
+
         public LogEntryViewer()
         {
             InitializeComponent();
@@ -30,6 +33,7 @@ namespace NuixLogReviewer.GUI
 
         public void Clear()
         {
+            _current = null;
             txtTimeStamp.Text = "";
             txtElapsed.Text = "";
             txtLevel.Text = "";
@@ -39,7 +43,7 @@ namespace NuixLogReviewer.GUI
             txtContent.Text = "";
             txtFilePath.Text = "";
             flagList.ItemsSource = new object[] { };
-
+            if (btnCopyLogLine != null) { btnCopyLogLine.IsEnabled = false; }
         }
 
         /// <summary>Item shown in the Assigned Flags list: the flag name plus its description tooltip.</summary>
@@ -66,6 +70,7 @@ namespace NuixLogReviewer.GUI
 
         public void SetLogEntry(NuixLogEntry entry)
         {
+            _current = entry;
             if (entry == null)
             {
                 Clear();
@@ -81,6 +86,21 @@ namespace NuixLogReviewer.GUI
                 txtContent.Text = entry.Content;
                 txtFilePath.Text = entry.FilePath;
                 flagList.ItemsSource = ToFlagViews(entry.Flags);
+                btnCopyLogLine.IsEnabled = true;
+            }
+        }
+
+        /// <summary>Copies the full reconstructed log line for the shown entry to the clipboard.</summary>
+        private void btnCopyLogLine_Click(object sender, RoutedEventArgs e)
+        {
+            if (_current == null) { return; }
+            try
+            {
+                Clipboard.SetText(_current.ToLogLine());
+            }
+            catch (Exception)
+            {
+                // Clipboard can be transiently locked by another process; ignore rather than crash.
             }
         }
 

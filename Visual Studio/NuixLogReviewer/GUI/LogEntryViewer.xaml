@@ -70,7 +70,10 @@
                 <TextBox x:Name="txtFilePath" IsReadOnly="True"  FontFamily="Consolas" VerticalContentAlignment="Center"/>
             </DockPanel>
             <StackPanel Grid.Row="2" Orientation="Horizontal">
-                <CheckBox x:Name="checkWrapText" Content="Wrap Text" IsChecked="True"/>
+                <CheckBox x:Name="checkWrapText" Content="Wrap Text" IsChecked="True" VerticalAlignment="Center"/>
+                <Button x:Name="btnCopyLogLine" Content="Copy Log Line" Click="btnCopyLogLine_Click"
+                        Margin="16,0,0,0" Padding="8,2" IsEnabled="False"
+                        ToolTip="Copy the full reconstructed log line (timestamp, level, source, content) to the clipboard."/>
             </StackPanel>
             <TextBox Grid.Row="1" x:Name="txtContent" FontFamily="{StaticResource Font.Mono}" IsReadOnly="true"
                      VerticalContentAlignment="Top" AcceptsReturn="True"

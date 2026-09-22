@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Nuix Log Reviewer — User Guide</title>
+<style>
+  :root{
+    --brand:#0056E3; --brand-dark:#00379B; --brand-faint:#EAF1FE;
+    --text:#1b1d21; --muted:#5b6472; --border:#dfe3ea; --surface:#ffffff; --surface-alt:#f6f8fc;
+    --info:#3CB371; --warn:#C98A00; --error:#D23A34; --debug:#2AA7BD; --match:#D500F9;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:"Segoe UI",Arial,sans-serif;color:var(--text);line-height:1.55;background:var(--surface)}
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,pre{font-family:Consolas,"Courier New",monospace}
+  code{background:var(--surface-alt);border:1px solid var(--border);border-radius:3px;padding:1px 4px;font-size:0.9em}
+  pre{background:var(--surface-alt);border:1px solid var(--border);border-radius:5px;padding:12px 14px;overflow-x:auto;font-size:0.88em;line-height:1.45}
+  pre code{background:none;border:none;padding:0}
+  .layout{display:flex;min-height:100vh}
+  nav.toc{width:270px;flex:0 0 270px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    background:var(--surface-alt);border-right:1px solid var(--border);padding:18px 14px}
+  nav.toc h1{font-size:15px;color:var(--brand-dark);margin:0 0 4px 0}
+  nav.toc .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
+  nav.toc ul{list-style:none;margin:0;padding:0}
+  nav.toc li{margin:1px 0}
+  nav.toc a{display:block;padding:4px 8px;border-radius:4px;color:var(--text);font-size:13px}
+  nav.toc a.section{font-weight:600;margin-top:8px}
+  nav.toc a.child{padding-left:20px;color:var(--muted);font-size:12.5px}
+  nav.toc a:hover{background:var(--brand-faint);text-decoration:none}
+  nav.toc a.active{background:var(--brand);color:#fff}
+  main{flex:1 1 auto;max-width:900px;padding:28px 40px 120px 40px}
+  h1.title{font-size:26px;margin:0 0 2px 0;color:var(--brand-dark)}
+  .lede{color:var(--muted);margin:0 0 24px 0}
+  section{scroll-margin-top:16px;padding-top:10px}
+  h2{font-size:20px;color:var(--brand-dark);border-bottom:2px solid var(--brand);padding-bottom:5px;margin-top:34px}
+  h3{font-size:15.5px;margin-top:22px;color:#243040}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--border);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--surface-alt);font-weight:600}
+  .tip{background:var(--brand-faint);border-left:4px solid var(--brand);padding:10px 14px;border-radius:0 5px 5px 0;margin:14px 0}
+  .note{background:#FFF8E6;border-left:4px solid var(--warn);padding:10px 14px;border-radius:0 5px 5px 0;margin:14px 0}
+  kbd{background:#fff;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:0.85em;font-family:inherit}
+  .pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;color:#fff}
+  .pill.err{background:var(--error)} .pill.warn{background:var(--warn)} .pill.info{background:var(--info)}
+  .pill.crit{background:#7A0B0B} .pill.notice{background:var(--muted)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle}
+  .muted{color:var(--muted)}
+  footer{color:var(--muted);font-size:12px;border-top:1px solid var(--border);margin-top:40px;padding-top:12px}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <h1>Nuix Log Reviewer</h1>
+  <div class="sub">User Guide</div>
+  <ul id="tocList">
+    <li><a class="section" href="#overview">Overview</a></li>
+    <li><a class="section" href="#loading">Loading logs</a></li>
+    <li><a class="child" href="#loading-formats">Recognized files &amp; formats</a></li>
+    <li><a class="section" href="#searching">Searching</a></li>
+    <li><a class="child" href="#search-fields">Query fields</a></li>
+    <li><a class="child" href="#search-age">The <code>age</code> field</a></li>
+    <li><a class="child" href="#search-examples">Examples</a></li>
+    <li><a class="child" href="#search-find">Find within results</a></li>
+    <li><a class="section" href="#grid">Results grid &amp; Details</a></li>
+    <li><a class="section" href="#timeline">Timeline chart</a></li>
+    <li><a class="section" href="#tabs">Analysis tabs</a></li>
+    <li><a class="child" href="#tab-classifiers">Classifiers</a></li>
+    <li><a class="child" href="#tab-files">Files</a></li>
+    <li><a class="child" href="#tab-patterns">Patterns</a></li>
+    <li><a class="child" href="#tab-jobs">Jobs</a></li>
+    <li><a class="child" href="#tab-insights">Insights</a></li>
+    <li><a class="section" href="#history">History &amp; saved searches</a></li>
+    <li><a class="section" href="#config">Configuration</a></li>
+    <li><a class="child" href="#config-patterns">LogPatterns.config</a></li>
+    <li><a class="child" href="#config-visibility">Classifier visibility</a></li>
+    <li><a class="section" href="#extending">Extending the app</a></li>
+    <li><a class="child" href="#ext-classifiers">Scripted classifiers</a></li>
+    <li><a class="child" href="#ext-insights">Scripted insights</a></li>
+    <li><a class="child" href="#ext-builtin">Built-in classifiers &amp; insights</a></li>
+  </ul>
+</nav>
+
+<main>
+  <h1 class="title">Nuix Log Reviewer</h1>
+  <p class="lede">A tool for triaging Nuix Workstation, Automate engine, Derby server, and Adaptive Security logs: search, visualize over time, group into recurring patterns, and surface notable findings.</p>
+
+  <section id="overview">
+    <h2>Overview</h2>
+    <p>The reviewer loads one or more log files into an in-memory, searchable index and presents them as a filterable grid with a timeline chart and several analysis tabs. Multi-line entries (e.g. stack traces) are kept together as a single entry.</p>
+    <p>The typical workflow:</p>
+    <ol>
+      <li><strong>Load</strong> logs (a directory or individual files).</li>
+      <li><strong>Search / filter</strong> using the query bar, the level chips, or by hiding classifiers, files, and patterns.</li>
+      <li><strong>Visualize</strong> volume over time on the timeline; drag to zoom to a window, click to jump.</li>
+      <li><strong>Analyze</strong> — compute Patterns and Jobs, and run Insights for a list of "threads to pull on".</li>
+      <li><strong>Report</strong> — copy or save per-pattern summaries with real examples.</li>
+    </ol>
+    <div class="tip"><strong>Whole-corpus vs. filtered.</strong> Most tabs reflect your <em>current filtered view</em>. <strong>Insights</strong> are the exception: they always analyze the whole loaded set, regardless of what you've hidden or searched.</div>
+  </section>
+
+  <section id="loading">
+    <h2>Loading logs</h2>
+    <table>
+      <tr><th>Menu</th><th>What it does</th></tr>
+      <tr><td><strong>File &rsaquo; Load Nuix Logs</strong></td><td>Pick one or more individual log files.</td></tr>
+      <tr><td><strong>File &rsaquo; Load Logs from Directory</strong></td><td>Recursively load all <em>structured</em> logs under a folder (see below).</td></tr>
+      <tr><td><strong>File &rsaquo; Export Current Entries</strong></td><td>Write the <em>current filtered view</em> back out as a <code>.log</code> file (reconstructed lines).</td></tr>
+    </table>
+    <div class="note">Loading a new set <strong>replaces</strong> the current session — the grid, patterns, jobs, insights, hidden sets, and history are all reset for the new corpus.</div>
+
+    <h3 id="loading-formats">Recognized files &amp; formats</h3>
+    <p>A directory load includes files matching these name patterns, and skips the unstructured blobs <code>stdout.log</code>, <code>stderr.log</code>, <code>derby.log</code>:</p>
+    <ul>
+      <li><code>nuix*.log*</code> — Workstation / worker logs</li>
+      <li><code>automate-scheduler*.log*</code>, <code>automate-engine-server*.log*</code></li>
+      <li><code>engine.*-job.*.log*</code>, <code>engine.*-init.log*</code> — Automate engine logs</li>
+      <li><code>derby-server*.log*</code> — Derby network server logs</li>
+      <li><code>adaptive-prod-*.txt</code> — Adaptive Security microservice / container logs</li>
+    </ul>
+    <p>Each file's format is detected automatically by sampling its first lines, so different producers are parsed correctly without any per-file configuration. Supported formats:</p>
+    <ul>
+      <li><strong>Nuix / Automate / Derby</strong> — <code>date time [channel] level source - message</code>. The timezone offset and elapsed-milliseconds field are optional; the millisecond separator may be <code>.</code> (Nuix/Automate) or <code>,</code> (Derby, <code>HH:mm:ss,fff</code>).</li>
+      <li><strong>Adaptive Security (.NET)</strong> — Kubernetes-prefixed lines of the form <code>[date time LEVEL] source | message</code>.</li>
+      <li><strong>Adaptive Security (C++)</strong> — Kubernetes-prefixed <code>date time LEVEL C:… P:… T:… message</code>.</li>
+    </ul>
+    <p>For the Adaptive formats, the leading Kubernetes/CRI transport timestamp is stripped from every line (including stack-trace continuation lines), and level names are normalized (e.g. <code>EROR</code>&rarr;ERROR, <code>INFORMATION</code>&rarr;INFO). Lines that don't start a new timestamped entry are treated as continuation content of the previous entry, so multi-line messages and stack traces stay together as one entry.</p>
+  </section>
+
+  <section id="searching">
+    <h2>Searching</h2>
+    <p>Type a query in the <strong>Query</strong> bar and press <kbd>Enter</kbd> (or click the magnifier). The query language is Lucene-style with a default field of <code>content</code> and a default operator of <strong>AND</strong>. Searches run in the background and can be cancelled from the busy overlay.</p>
+    <p>Additional quick filters compose <em>on top of</em> the query bar without editing it:</p>
+    <ul>
+      <li><strong>Level chips</strong> in the status bar — click INFO/WARN/ERROR/DEBUG to drill down to that level.</li>
+      <li><strong>Eye toggles</strong> on the Classifiers, Files, and Patterns tabs — hide/show subsets of the current view.</li>
+      <li>The status bar shows <em>filtered / total</em> and an <em>"N hidden by filters"</em> indicator.</li>
+    </ul>
+
+    <h3 id="search-fields">Query fields</h3>
+    <table>
+      <tr><th>Field</th><th>Meaning</th><th>Example</th></tr>
+      <tr><td><code>content</code> <span class="muted">(default)</span></td><td>Free-text, tokenized &amp; case-insensitive. Use quotes for phrases.</td><td><code>content:"disk space"</code></td></tr>
+      <tr><td><code>level</code></td><td>Log level (case-insensitive).</td><td><code>level:error</code></td></tr>
+      <tr><td><code>source</code></td><td>Logging source / class.</td><td><code>source:com.nuix.data.core.k</code></td></tr>
+      <tr><td><code>channel</code></td><td>Thread / channel.</td><td><code>channel:main</code></td></tr>
+      <tr><td><code>flag</code></td><td>Classifier flag (see Classifiers).</td><td><code>flag:disk_space</code></td></tr>
+      <tr><td><code>job</code></td><td>Worker job id.</td><td><code>job:job-<em>&lt;32hex&gt;</em></code></td></tr>
+      <tr><td><code>file</code></td><td>Source file.</td><td>(usually set by double-clicking a file)</td></tr>
+      <tr><td><code>timestamp</code></td><td>Event time in .NET ticks; numeric range.</td><td><code>timestamp:[<em>a</em> TO <em>b</em>]</code></td></tr>
+      <tr><td><code>date</code></td><td>Day as an integer <code>YYYYMMDD</code>.</td><td><code>date:20240115</code></td></tr>
+      <tr><td><code>age</code></td><td>Virtual field — time before the newest event (see below).</td><td><code>age:24h</code></td></tr>
+      <tr><td><code>line</code>, <code>id</code></td><td>Line number / entry id (numeric).</td><td><code>line:1487</code></td></tr>
+    </table>
+    <p>Combine with <code>AND</code>, <code>OR</code>, <code>NOT</code> and parentheses. Lower-case <code>not</code> is accepted and treated as <code>NOT</code>. A pure negation like <code>NOT flag:worker_log</code> returns everything not matching.</p>
+
+    <h3 id="search-age">The <code>age</code> field</h3>
+    <p><code>age</code> is relative to the <em>newest</em> event in the loaded set. A single term means "at most this old"; a range narrows a window:</p>
+    <ul>
+      <li><code>age:24h</code> — events within the last 24 hours of the run.</li>
+      <li><code>age:[1h TO 3d]</code> — between 1 hour and 3 days before the end.</li>
+    </ul>
+    <p>Duration units: <code>d</code> days, <code>h</code> hours, <code>m</code> minutes, <code>s</code> seconds. A bare number is seconds.</p>
+
+    <h3 id="search-examples">Examples</h3>
+    <pre><code>level:error
+level:(error OR warn)
+flag:disk_space AND level:error
+content:(timeout OR "connection refused")
+timestamp:[638000000000000000 TO 638000000000009999]
+age:4h
+job:job-abcdef0123456789abcdef0123456789 AND level:error</code></pre>
+    <div class="tip">Several ready-made searches ship under <strong>Searches &rsaquo; Append/Replace</strong> (e.g. Errors, Errors and Warnings, Age – Last 4h/24h). Save your own with <strong>Searches &rsaquo; Save Current Search As…</strong></div>
+
+    <h3 id="search-find">Find within results</h3>
+    <p>The <strong>Find</strong> bar (beneath the query bar) <em>marks</em> — it does not filter — rows in the current set whose full content matches. Matching rows get a <span class="dot" style="background:var(--match)"></span> magenta dot in the leading column.</p>
+    <ul>
+      <li><strong>Regex</strong> and <strong>Case</strong> toggles.</li>
+      <li><kbd>Enter</kbd> = next match, <kbd>Shift</kbd>+<kbd>Enter</kbd> = previous, <kbd>Esc</kbd> = clear. Prev/Next buttons do the same and wrap around.</li>
+      <li>The counter shows <em>X of Y</em>; navigation selects the matched row and scrolls to it.</li>
+    </ul>
+    <div class="tip">Use the <strong>Query</strong> bar to choose <em>which</em> records are shown, and <strong>Find</strong> to locate specific ones <em>within</em> that set — e.g. pull in a time window for context, then find your seed event.</div>
+  </section>
+
+  <section id="grid">
+    <h2>Results grid &amp; Details</h2>
+    <p>The grid lists matching entries with columns for File, Line, Time, an optional Δ (gap) column, Level, and Content. Rows are tinted by level (<span class="pill err">ERROR</span> <span class="pill warn">WARN</span> <span class="pill info">INFO</span> DEBUG). The File column shows a shortest-unique path tail (full path in the tooltip).</p>
+    <ul>
+      <li><strong>Time-gap cue</strong> (Settings &rsaquo; Time-gap cue) colors the line between rows by the time gap to the previous row, and/or shows a numeric Δ column. Tune the floor and highlight thresholds with the sliders.</li>
+      <li><strong>Pivot Around Event Time…</strong> (right-click a row) reruns the search as a <code>timestamp:[…]</code> window around that event, keeping it selected — good for pulling in surrounding context.</li>
+      <li>Selecting a row opens the <strong>Details</strong> tab: all fields, assigned classifier flags (with descriptions), the full content, and a <strong>Copy Log Line</strong> button that copies the reconstructed line.</li>
+    </ul>
+  </section>
+
+  <section id="timeline">
+    <h2>Timeline chart</h2>
+    <p>The strip under the grid charts INFO/WARN/ERROR volume over the current set's time span as a stacked density bar.</p>
+    <ul>
+      <li><strong>Drag</strong> horizontally to zoom the search to that time window.</li>
+      <li><strong>Click</strong> to scroll the grid to the nearest event at or before that time (doesn't change the search).</li>
+      <li><strong>Hover</strong> for a timestamp readout. A marker shows the selected row's time; a shaded band shows the currently-visible rows.</li>
+      <li><strong>Log</strong> toggle (top-right) log-compresses bar heights so small/rare buckets stay visible next to a very tall one (e.g. a spike of errors next to a wall of retries).</li>
+      <li><strong>Job lanes</strong> — when Jobs are computed and "Show on timeline" is on, worker job lifespans are drawn as brackets above the bars; selecting a job in the Jobs tab emphasizes its bracket.</li>
+    </ul>
+  </section>
+
+  <section id="tabs">
+    <h2>Analysis tabs</h2>
+
+    <h3 id="tab-classifiers">Classifiers</h3>
+    <p>Lists the classifier flags present in the loaded set with counts and descriptions. Classifiers are rules that tag entries (e.g. <code>disk_space</code>, <code>null_pointer</code>). Use the <strong>eye</strong> to hide/show a flag's entries in the current view, <strong>Hide all / Show all</strong> for bulk changes, or double-click to drill to <code>flag:&lt;name&gt;</code>. Counts reflect the whole set, so hidden flags still show their true totals.</p>
+
+    <h3 id="tab-files">Files</h3>
+    <p>Lists the source files with counts. Eye-toggle to hide/show a file, or double-click to drill into just that file. Names are shortest-unique tails (e.g. <code>worker-1/nuix.log</code>).</p>
+
+    <h3 id="tab-patterns">Patterns</h3>
+    <p><strong>Compute Patterns</strong> groups the current set into normalized message <em>templates</em> — variable parts (ids, paths, numbers, …) are masked so recurring shapes collapse together. This surfaces both high-volume noise and rare one-offs. Default sort is by count <em>ascending</em>, so the rarest patterns are at the top.</p>
+    <ul>
+      <li><strong>Eye</strong> hides/shows a pattern's entries in the main view; the listed counts stay as-of the last Compute (a stale hint reminds you to recompute).</li>
+      <li><strong>Expand by</strong> (Worker / Exception / Sub-template) then click a row's expander to break that pattern into sub-patterns — e.g. by which worker produced it, or which exception it carries. Double-click a sub-pattern to drill into just those entries.</li>
+      <li><strong>Double-click</strong> a pattern to show exactly its entries in the grid.</li>
+    </ul>
+    <p><strong>Copy / export a summary</strong> (right-click selected patterns): each option produces a per-pattern report with the matched template, counts, the files it appears in, and one real example line in a monospace block.</p>
+    <table>
+      <tr><th>Option</th><th>Best for</th></tr>
+      <tr><td>Copy Summary (rich + Markdown)</td><td>Pasting into Word / Outlook / Confluence (rich HTML) or a Markdown doc.</td></tr>
+      <tr><td>Copy Summary (for Slack)</td><td>Pasting into a Slack message (Slack mrkdwn: bold headers, fenced code blocks).</td></tr>
+      <tr><td>Copy Summary (plain text)</td><td>Any plain-text destination.</td></tr>
+      <tr><td>Save Summary to HTML File…</td><td>A standalone, styled report you can open or attach.</td></tr>
+    </table>
+
+    <h3 id="tab-jobs">Jobs</h3>
+    <p><strong>Compute Jobs</strong> groups worker entries by job id and shows each job's lifespan (first/last event), entry/warn/error counts. Double-click to drill to <code>job:&lt;id&gt;</code>; selecting a row highlights the job on the timeline.</p>
+
+    <h3 id="tab-insights">Insights</h3>
+    <p><strong>Analyze</strong> scans the whole loaded corpus and lists notable findings — "threads to pull on" — grouped by source. Each finding has a severity (<span class="pill crit">Critical</span> <span class="pill warn">Warning</span> <span class="pill notice">Notice</span> <span class="pill info">Info</span>) and, usually, a ready-made query. <strong>Double-click</strong> a finding to run its query and jump to the evidence.</p>
+    <p>Built-in detectors cover error spikes, error-heavy files, troubled jobs, notable/rare patterns, silence gaps, error trends, first errors, out-of-memory, GC pressure, disk space, and throttling/retries (see below). You can add your own — see <a href="#ext-insights">Scripted insights</a>.</p>
+  </section>
+
+  <section id="history">
+    <h2>History &amp; saved searches</h2>
+    <ul>
+      <li><strong>Back / Forward</strong> (or <kbd>Alt</kbd>+<kbd>&larr;</kbd> / <kbd>Alt</kbd>+<kbd>&rarr;</kbd>) move through your view history — each step remembers the query, hidden sets, and grid position.</li>
+      <li><strong>Searches &rsaquo; Save Current Search As…</strong> stores the current query by name; <strong>Append</strong> ANDs a saved query onto the current one, <strong>Replace</strong> swaps it in.</li>
+      <li>The status-bar <strong>Range</strong> label shows the current set's time span; click it to copy.</li>
+    </ul>
+  </section>
+
+  <section id="config">
+    <h2>Configuration</h2>
+    <p>Editable configuration lives in a <code>Configuration</code> folder next to the application (open it via <strong>Settings &rsaquo; Open Configuration Folder</strong>):</p>
+    <table>
+      <tr><th>Path</th><th>Purpose</th></tr>
+      <tr><td><code>LogPatterns.config</code></td><td>Pattern-masking rules &amp; grouping.</td></tr>
+      <tr><td><code>ClassifierVisibility.config</code></td><td>Per-flag default show/hide.</td></tr>
+      <tr><td><code>SavedSearches\*.txt</code></td><td>Saved searches (filename = name, contents = query).</td></tr>
+      <tr><td><code>ClassifierScripts\*.js</code></td><td>Scripted classifiers.</td></tr>
+      <tr><td><code>InsightScripts\*.js</code></td><td>Scripted insight detectors.</td></tr>
+    </table>
+    <div class="note"><code>LogPatterns.config</code> and scripted classifiers are read <strong>once at startup</strong>, and templates are computed at index time — so after editing them you must <strong>restart and reload</strong> the logs. Insight scripts are re-read on every <strong>Analyze</strong>.</div>
+
+    <h3 id="config-patterns">LogPatterns.config</h3>
+    <p>One directive per line; blank lines and <code>#</code> comments are ignored. Rules apply top-to-bottom (most specific first):</p>
+    <pre><code># Mask a variable part to a token:
+&lt;regex&gt; =&gt; &lt;token&gt;
+
+# Collapse a known-noisy family by its first-line prefix (case-sensitive):
+GROUP=Invalid cookie header:
+
+# Exception-aware templating (default on): append the first Java throwable
+# class + message so same-shape/different-exception errors don't merge.
+EXCEPTIONS=on</code></pre>
+    <p>Built-in tokens include <code>&lt;GUID&gt;</code>, <code>&lt;EMAIL&gt;</code>, <code>&lt;PATH&gt;</code>, <code>&lt;URL&gt;</code>, <code>&lt;IP&gt;</code>, <code>&lt;TS&gt;</code> (timestamps), <code>&lt;ID&gt;</code> (hex ids), <code>&lt;SLACKID&gt;</code>, <code>&lt;OBJ&gt;</code> (Java object refs), <code>/&lt;FILE&gt;</code>, <code>'&lt;KEY&gt;'</code> (config keys), <code>#U</code> (number+unit) and <code>#</code> (bare number). Templates are built from the first line, whitespace-collapsed and length-capped.</p>
+
+    <h3 id="config-visibility">Classifier visibility</h3>
+    <p><strong>Settings &rsaquo; Classifier Defaults…</strong> sets which classifier flags are shown or hidden <em>by default on load</em> (written to <code>ClassifierVisibility.config</code> as <code>&lt;flag&gt; = shown|hidden</code>). This affects the next load; per-session eye toggles are independent.</p>
+  </section>
+
+  <section id="extending">
+    <h2>Extending the app</h2>
+
+    <h3 id="ext-classifiers">Scripted classifiers</h3>
+    <p>Drop a <code>.js</code> file in <code>Configuration\ClassifierScripts\</code>. The script evaluates to an object exposing <code>classify(entry)</code> that returns a flag string, an array of strings, or nothing:</p>
+    <pre><code>({
+  name: "My rule",
+  // optional: only run when content/source contains one of these (fast pre-filter)
+  prefilter: ["timeout", "socket"],
+  // optional: flag -> description shown in the Classifiers tab
+  descriptions: { my_timeout: "A network timeout." },
+  classify: function (entry) {
+    if (entry.content.indexOf("SocketTimeoutException") &gt;= 0) return "my_timeout";
+    return null;
+  }
+})</code></pre>
+    <p>The <code>entry</code> exposes read-only <code>content</code>, <code>source</code>, <code>level</code>, <code>channel</code>, <code>filePath</code>, <code>fileName</code>, <code>timeStamp</code> (ISO string), <code>elapsedMs</code>, and <code>lineNumber</code>. Scripts run in a sandbox (no filesystem/network, time- and statement-limited); a misbehaving script is disabled for the session and reported. Flags become searchable as <code>flag:&lt;name&gt;</code>.</p>
+
+    <h3 id="ext-insights">Scripted insights</h3>
+    <p>Drop a <code>.js</code> file in <code>Configuration\InsightScripts\</code> (see the shipped <code>example_insight.js</code>). The script exposes <code>analyze(ctx)</code> returning an array of findings:</p>
+    <pre><code>({
+  name: "Custom",
+  analyze: function (ctx) {
+    var out = [];
+    ctx.patterns.forEach(function (p) {
+      if (p.error &gt; 100) out.push({
+        severity: "warning",           // info | notice | warning | critical
+        title: "High-volume error pattern",
+        detail: p.count + " lines: " + p.template,
+        query: p.query                 // precomputed, ready to run
+      });
+    });
+    return out;
+  }
+})</code></pre>
+    <p><code>ctx</code> exposes whole-corpus data: scalars (<code>total, info, warn, error, debug, minTicks, maxTicks</code>) and arrays <code>flags</code>, <code>files</code>, <code>jobs</code>, <code>patterns</code>. Every item carries a precomputed, correctly-escaped <code>.query</code> you can hand straight back as a finding's jump target. A finding needs at least a <code>title</code>; <code>query</code>, <code>positionEntryId</code>, and <code>positionTicks</code> are optional. Insight scripts are re-read on each Analyze.</p>
+
+    <h3 id="ext-builtin">Built-in classifiers &amp; insights</h3>
+    <p><strong>Classifier flags</strong> shipped with the app include: <code>disk_space</code>, <code>memory</code>, <code>worker_state</code>, <code>multi_line</code>, <code>script</code>, <code>worker_log</code>, <code>nuix_package</code>, <code>process_killed</code>, <code>problem_processing_item</code>, <code>session_is_closed</code>, <code>null_pointer</code>, <code>http_forbidden</code>, <code>http_unauthorized</code>, <code>http_timeout</code>, <code>connection_refused</code>, <code>engine_comm_failure</code>, <code>engine_load_failure</code>, <code>license</code>, <code>third_party_rest</code>, <code>oidc_sync_failure</code>, <code>google_oidc</code>.</p>
+    <p><strong>Insight detectors:</strong></p>
+    <table>
+      <tr><th>Finding group</th><th>What it flags</th></tr>
+      <tr><td>Error spikes</td><td>A time bucket with an unusually high error count.</td></tr>
+      <tr><td>Error-heavy files</td><td>A file holding a large share of all entries when errors are present.</td></tr>
+      <tr><td>Troubled jobs</td><td>A worker job with a high error rate and count.</td></tr>
+      <tr><td>Notable patterns</td><td>A single dominating template, and rare error one-offs.</td></tr>
+      <tr><td>Silence gaps</td><td>A quiet period much longer than the log's normal cadence (possible hang/stall).</td></tr>
+      <tr><td>Error trend</td><td>Error rate ramping up toward the end of the run.</td></tr>
+      <tr><td>First errors</td><td>When errors first appear after a clean run.</td></tr>
+      <tr><td>Out of memory</td><td>OutOfMemoryError / heap / GC-overhead / native-thread exhaustion.</td></tr>
+      <tr><td>GC pressure</td><td>High peak percentage of time spent in garbage collection.</td></tr>
+      <tr><td>Disk space</td><td>Disk-space messages were logged.</td></tr>
+      <tr><td>Throttling / retries</td><td>A high volume of retry/throttle messages (e.g. an API rate-limiting the run).</td></tr>
+    </table>
+    <div class="tip">All of these emit the same kind of finding (title, detail, query, position), so scripted detectors are first-class alongside the built-ins.</div>
+  </section>
+
+  <footer>Nuix Log Reviewer — User Guide. Generated help; open from <strong>Help &rsaquo; User Guide</strong>.</footer>
+</main>
+</div>
+
+<script>
+  // Scroll-spy: highlight the TOC entry for the section currently in view.
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('#tocList a'));
+    var map = {};
+    links.forEach(function (a) {
+      var id = a.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (el) map[id] = a;
+    });
+    var ids = Object.keys(map);
+    function onScroll() {
+      var best = null, bestTop = -Infinity;
+      var mark = 120;
+      ids.forEach(function (id) {
+        var rect = document.getElementById(id).getBoundingClientRect();
+        if (rect.top <= mark && rect.top > bestTop) { bestTop = rect.top; best = id; }
+      });
+      links.forEach(function (a) { a.classList.remove('active'); });
+      if (best && map[best]) map[best].classList.add('active');
+    }
+    document.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    onScroll();
+  })();
+</script>
+</body>
+</html>

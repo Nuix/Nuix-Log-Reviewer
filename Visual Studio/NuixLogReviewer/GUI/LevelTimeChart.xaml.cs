@@ -43,6 +43,10 @@ namespace NuixLogReviewer.GUI
 
         private bool _dragging;
         private double _dragStartX;
+        // When true, bar heights are log-compressed (see redraw): height ~ log(1+total), split across
+        // levels by proportion. Preserves the stacked INFO/WARN/ERROR look while keeping small buckets
+        // visible next to very tall ones. Toggled by the corner "Log" checkbox.
+        private bool _logScale;
 
         // Remembered so they can be re-applied on resize / redraw.
         private long? _markerTicks;
@@ -275,6 +279,13 @@ namespace NuixLogReviewer.GUI
 
             double bucketW = w / buckets;
 
+            // Height scale. Linear: segment height is proportional to its count. Log: the whole bar's
+            // height is proportional to log(1+total) (so a huge bucket doesn't flatten the small ones),
+            // and that bar height is split across levels by each level's PROPORTION of the total - you
+            // can't log-scale each stacked segment independently (log(a+b) != log a + log b), so we
+            // log-scale the total and keep the segments proportional.
+            double logMax = Math.Log(1 + maxTotal);
+
             for (int b = 0; b < buckets; b++)
             {
                 int info = counts[b, 0];
@@ -285,17 +296,40 @@ namespace NuixLogReviewer.GUI
 
                 double x = b * bucketW;
                 double colW = Math.Max(1.0, bucketW); // avoid sub-pixel gaps
-                double scale = h / maxTotal;
+
+                double errH, warnH, infoH;
+                if (_logScale)
+                {
+                    // Bar height from the log of the total, then divide by level proportion.
+                    double barH = logMax > 0 ? Math.Log(1 + total) / logMax * h : 0;
+                    errH = barH * error / total;
+                    warnH = barH * warn / total;
+                    infoH = barH * info / total;
+                }
+                else
+                {
+                    double scale = h / maxTotal;
+                    errH = error * scale;
+                    warnH = warn * scale;
+                    infoH = info * scale;
+                }
 
                 // Stack from the bottom up: ERROR, then WARN, then INFO on top.
                 double y = h;
-                y = addSegment(x, y, colW, error * scale, ErrorBrush);
-                y = addSegment(x, y, colW, warn * scale, WarnBrush);
-                y = addSegment(x, y, colW, info * scale, InfoBrush);
+                y = addSegment(x, y, colW, errH, ErrorBrush);
+                y = addSegment(x, y, colW, warnH, WarnBrush);
+                y = addSegment(x, y, colW, infoH, InfoBrush);
             }
 
             applyOverlays();
             drawJobSpans();
+        }
+
+        /// <summary>Toggles log-scaled bar heights and redraws.</summary>
+        private void chkLogScale_Click(object sender, RoutedEventArgs e)
+        {
+            _logScale = chkLogScale.IsChecked == true;
+            redraw();
         }
 
         private double addSegment(double x, double bottomY, double width, double segHeight, Brush fill)
