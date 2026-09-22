@@ -70,15 +70,24 @@ namespace NuixLogReviewer.LogRepository.Insights
             double sd = Math.Sqrt(variance);
             if (sd <= 0) yield break;
 
-            double bucketTicks = (double)(ts.MaxTicks.Value - ts.MinTicks.Value) / n;
+            // Bucket width MUST use the SAME mapping the timeline collector used to place events into
+            // buckets: LevelBucketCollector maps ticks->bucket with b = (ticks-min)*(buckets-1)/span,
+            // i.e. bucket width = span/(buckets-1). Using (max-min)/n here (divisor n, not n-1) shifts
+            // the reconstructed window by ~one bucket, so for a dense burst the timestamp:[..] query
+            // misses the very events the finding counted. Match the collector exactly.
+            double bucketTicks = n > 1 ? (double)(ts.MaxTicks.Value - ts.MinTicks.Value) / (n - 1) : (ts.MaxTicks.Value - ts.MinTicks.Value);
 
             for (int b = 0; b < n; b++)
             {
                 if (errs[b] >= _t.SpikeMinErrors && errs[b] > mean + _t.SpikeSigma * sd)
                 {
-                    long startTicks = ts.MinTicks.Value + (long)(b * bucketTicks);
-                    long endTicks = ts.MinTicks.Value + (long)((b + 1) * bucketTicks);
-                    var start = new DateTime(startTicks);
+                    // Cover the whole bucket, with a half-bucket pad each side so an event exactly on a
+                    // boundary (int truncation in the collector) is never excluded.
+                    long startTicks = ts.MinTicks.Value + (long)((b - 0.5) * bucketTicks);
+                    long endTicks = ts.MinTicks.Value + (long)((b + 1.5) * bucketTicks);
+                    if (startTicks < ts.MinTicks.Value) startTicks = ts.MinTicks.Value;
+                    if (endTicks > ts.MaxTicks.Value) endTicks = ts.MaxTicks.Value;
+                    var start = new DateTime(ts.MinTicks.Value + (long)(b * bucketTicks));
                     double share = ctx.Error > 0 ? errs[b] / ctx.Error : 0;
 
                     yield return new Insight
@@ -88,7 +97,7 @@ namespace NuixLogReviewer.LogRepository.Insights
                         Detail = $"{errs[b]:N0} errors in one time slice ({share:P0} of all errors)",
                         // Errors within the spike's time window.
                         Query = $"level:error AND timestamp:[{startTicks} TO {endTicks}]",
-                        PositionTicks = startTicks,
+                        PositionTicks = start.Ticks,
                     };
                 }
             }
@@ -219,7 +228,9 @@ namespace NuixLogReviewer.LogRepository.Insights
                 yield break;
 
             int n = ts.Buckets;
-            double bucketTicks = (double)(ts.MaxTicks.Value - ts.MinTicks.Value) / n;
+            // Match the timeline collector's ticks->bucket mapping (bucket width = span/(buckets-1))
+            // so the gap-end tick we query lands on the same events the buckets represent.
+            double bucketTicks = n > 1 ? (double)(ts.MaxTicks.Value - ts.MinTicks.Value) / (n - 1) : (ts.MaxTicks.Value - ts.MinTicks.Value);
             double bucketMinutes = bucketTicks / TimeSpan.TicksPerMinute;
             if (bucketMinutes <= 0) yield break;
 
@@ -311,7 +322,10 @@ namespace NuixLogReviewer.LogRepository.Insights
             // Ramp-up: meaningful late error rate that's a strong multiple of the early rate.
             if (lastMean >= 1 && lastMean >= _t.RampUpFactor * Math.Max(firstMean, 0.5))
             {
-                long lastThirdStart = ts.MinTicks.Value + (long)((long)(n - third) * (ts.MaxTicks.Value - ts.MinTicks.Value) / n);
+                // Same span/(buckets-1) mapping the timeline collector uses, so the boundary tick lines
+                // up with the bucketed events.
+                double bw = n > 1 ? (double)(ts.MaxTicks.Value - ts.MinTicks.Value) / (n - 1) : (ts.MaxTicks.Value - ts.MinTicks.Value);
+                long lastThirdStart = ts.MinTicks.Value + (long)((n - third) * bw);
                 yield return new Insight
                 {
                     Severity = InsightSeverity.Warning,
