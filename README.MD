@@ -7,21 +7,29 @@ View the GitHub project [here](https://github.com/Nuix/Nuix-Log-Reviewer) or dow
 
 # Overview
 
-This is a [.NET Framework 6.0](https://dotnet.microsoft.com/en-us/download) application which provides a quick and easy way to parse, index and search log files produced by [Nuix Workstation](https://www.nuix.com/products/nuixworkstation) (including worker logs).
+This is a [.NET 8](https://dotnet.microsoft.com/en-us/download) (Windows / WPF) application which provides a quick and easy way to parse, index, search, and triage log files. In addition to [Nuix Workstation](https://www.nuix.com/products/nuixworkstation) logs (including worker logs), it recognizes and parses:
+
+- **Nuix Workstation** and **Nuix Automate** engine logs
+- **Derby** database server logs (`derby-server*.log*`)
+- **Nuix Adaptive Security** microservice / container logs (`adaptive-prod-*.txt`), including Kubernetes-prefixed lines
+
+The application detects each file's format automatically, so a mixed directory of logs loads and merges into a single chronological view.
+
+Beyond search, it mines the loaded logs into recurring **Patterns**, surfaces automatic **Insights** ("threads to pull on"), and can export a self-contained, shareable **HTML findings report** with an interactive timeline. Both classification and insights are **user-scriptable**.
 
 ![image](https://user-images.githubusercontent.com/11775738/81017035-67325d00-8e16-11ea-91df-4b14abd1a41a.png)
 
 # Parsing
 
-Load one or more selected Nuix log files or a whole directory of Nuix log files (including worker logs).  A directory relative to the exe will be created containing a SQLite database and a Lucene search index.  The application will parse each log entry into a series of searchable fields:
+Load one or more selected log files or a whole directory of log files (including worker logs).  A directory relative to the exe will be created containing a SQLite database and a Lucene search index.  The application detects each file's format and parses every log entry into a series of searchable fields:
 
 - `line`: Line number of the first line of a given log entry (an entry may span multiple lines).
 - `channel`
-- `level`: Log entry level (`TRACE`,`DEBUG`,`WARN`,`ERROR`,etc).
-- `source`: Typically the [Java Package](https://docs.oracle.com/javase/tutorial/java/concepts/package.html) and class name of the code which generated a given log entry.
+- `level`: Log entry level (`TRACE`,`DEBUG`,`INFO`,`WARN`,`ERROR`, ...). Levels from other formats are normalized (e.g. Adaptive `EROR`/`WARN`/`INFORMATION`).
+- `source`: Typically the [Java Package](https://docs.oracle.com/javase/tutorial/java/concepts/package.html) and class name (or the .NET source) of the code which generated a given log entry.
 - `content`: The message part of the log entry, may span multiple lines.
-- `date`: Date of a given log entry.
-- `flag`: Classifications for log entries based on same basic classification logic.
+- `timestamp`: Event time of a given log entry (supports dot- and comma-millisecond formats).
+- `flag`: Classifications for log entries based on classification logic (built-in and user-scripted).
 
 For example the following log entry:
 
@@ -38,7 +46,7 @@ Would be indexed as follows:
 | `level` | `INFO` |
 | `source` | `com.nuix.investigator.evidence.add.i` |
 | `content` | `Spawning worker.` |
-| `date` | `20200429` |
+| `timestamp` | `2020-04-29 13:45:01.031` |
 
 This allows for searching through log entries with a query like the following:
 
@@ -50,7 +58,7 @@ Which should show a listing of entries from any worker logs you have loaded whic
 
 # Classification
 
-The application performs basic classification of log entries.  Classifications are indexed in the field `flag` allowing for easier searching.
+The application performs classification of log entries.  Classifications are indexed in the field `flag` allowing for easier searching.  A selection of the built-in classifiers:
 
 | Classification | Description |
 |----------------|-------------|
@@ -63,9 +71,28 @@ The application performs basic classification of log entries.  Classifications a
 | `multi_line` | Log entry spans multiple lines. |
 | `process_killed` | Log entry's **Content** starts with `Killing current process...` |
 | `problem_processing_item` | Log entry's **Content** starts with `Problem processing item` |
-| `session_is_closed` | Logn entry's **Content** contains `The Session is closed` |
+| `session_is_closed` | Log entry's **Content** contains `The Session is closed` |
+| `null_pointer` | A `NullPointerException`. |
+| `http_timeout`, `http_forbidden`, `http_unauthorized`, `connection_refused` | Common network / HTTP failure signals. |
+| `engine_load_failure`, `engine_comm_failure`, `license`, `third_party_rest`, `oidc_sync_failure`, `google_oidc` | Engine, licensing, and identity/integration signals. |
 
 So if you were looking for log entries regarding memory, you might try searching for `flag:memory`.
+
+You can also add your **own** classifiers as sandboxed JavaScript files in `Configuration/ClassifierScripts/` — each exposes a `classify(entry)` function returning one or more flags. See the in-app **User Guide** (Help menu) for the scripting reference. A ready-to-copy Adaptive Security classifier ships as an example.
+
+# Patterns
+
+The **Patterns** tab mines the loaded logs into recurring message templates (with variable parts masked), so you can see the shape of what's in the logs at a glance and how often each occurs. Patterns can be expanded into sub-patterns (by worker, exception, or sub-template), shown/hidden, and drilled into. Selected patterns can be exported as a findings report (see below).
+
+# Insights
+
+Click **Analyze** on the **Insights** tab for automatic findings — "threads to pull on" — across the whole loaded corpus: error spikes, silence gaps, error ramp-ups, first-error onset, and resource/throttling problems (out-of-memory, GC pressure, disk space). Each finding carries a ready-to-run query; double-click to jump to the evidence.
+
+Insights are also **user-scriptable**: drop a JavaScript `analyze(ctx)` file in `Configuration/InsightScripts/` (an Adaptive Security example ships in the box).
+
+# Findings report
+
+From the Patterns tab you can **Save Summary to HTML** — a self-contained, offline report of the selected patterns suitable for sharing. Each pattern shows its count, level breakdown, first/last seen, span, peak-burst window, source files, and a real example. You can optionally include an **interactive timeline** that plots each pattern over time (log-Y and bars toggles, zoom, tooltips, onset markers) along with a burst summary and lead-lag hints to help spot co-dependencies. Summaries can also be copied to the clipboard as rich HTML, Markdown, Slack, or plain text.
 
 # Log Entry Grid
 
