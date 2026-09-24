@@ -231,6 +231,14 @@ job:job-abcdef0123456789abcdef0123456789 AND level:error</code></pre>
       <tr><td>Copy Summary (plain text)</td><td>Any plain-text destination.</td></tr>
       <tr><td>Save Summary to HTML File…</td><td>A standalone, styled report you can open or attach.</td></tr>
     </table>
+    <p>The <strong>Save Summary to HTML</strong> report leads with a <strong>scope banner</strong> — the active filter query, the time window the report actually covers, and (when wider) the full span of the loaded logs — so a 30-minute report cut from four days of logs says exactly that. Each pattern section then shows its <strong>count</strong> and level breakdown, <strong>first/last seen</strong>, the <strong>span</strong> (e.g. "4 min" vs "3.2 days"), a <strong>peak burst</strong> line (how many events fell in the densest window and its start/stop times), the files it appears in, and one real example line.</p>
+    <p>On save you're asked whether to <strong>include the interactive timeline graph</strong>. When included, it plots one colored series per pattern (matching the section swatches / short IDs like <code>E1</code>, <code>W1</code>):</p>
+    <ul>
+      <li><strong>Interact:</strong> hover for per-pattern counts at that instant, drag to zoom a time window, double-click to reset, and click a legend entry to show/hide a series.</li>
+      <li><strong>Log Y</strong> and <strong>Bars</strong> toggles: log scale keeps a small correlated pattern visible next to a giant burst; bars read more honestly for dense short bursts.</li>
+      <li><strong>Onset markers</strong> (dashed vertical lines) mark each pattern's first event; a <strong>Burst summary</strong> and <strong>Possible relationships</strong> (lead-lag hints, e.g. "E1 leads W1 by ~1 min") reinforce the timing story — a thread to investigate, not proof of causation.</li>
+    </ul>
+    <p>Whether or not the graph is included, the report is fully self-contained and works offline with no network access, so it's safe to hand to a third party.</p>
 
     <h3 id="tab-jobs">Jobs</h3>
     <p><strong>Compute Jobs</strong> groups worker entries by job id and shows each job's lifespan (first/last event), entry/warn/error counts. Double-click to drill to <code>job:&lt;id&gt;</code>; selecting a row highlights the job on the timeline.</p>

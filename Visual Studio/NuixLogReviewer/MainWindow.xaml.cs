@@ -1590,11 +1590,48 @@ namespace NuixLogReviewer
         // example line from the log (raw content, incl. stack trace). Used to assemble findings.
 
         /// <summary>One pattern's summary data: metadata + a representative real example.</summary>
+        /// <summary>
+        /// The time window a report describes: the current filter's matched span (what the report is
+        /// scoped to) and the full loaded-corpus span, so a 30-minute report cut from 4 days of logs
+        /// says so. All optional — null when the index is empty or a bound can't be determined.
+        /// </summary>
+        private sealed class ReportScope
+        {
+            public string Query;              // the active query text (empty => all loaded logs)
+            public DateTime? FilterMin;       // earliest matched event in the current filter
+            public DateTime? FilterMax;       // latest matched event in the current filter
+            public DateTime? CorpusMin;       // earliest event across all loaded logs
+            public DateTime? CorpusMax;       // latest event across all loaded logs
+        }
+
+        /// <summary>Computes the report scope from the current query and the loaded-corpus bounds.</summary>
+        private ReportScope BuildReportScope()
+        {
+            var scope = new ReportScope { Query = txtSearchQuery.Text?.Trim() ?? "" };
+            try
+            {
+                var idx = repo?.SearchIndex;
+                if (idx != null)
+                {
+                    if (idx.MinTimestampTicks.HasValue) scope.CorpusMin = new DateTime(idx.MinTimestampTicks.Value);
+                    if (idx.MaxTimestampTicks.HasValue) scope.CorpusMax = new DateTime(idx.MaxTimestampTicks.Value);
+                    var (min, max) = idx.TimestampBoundsForQuery(scope.Query);
+                    if (min.HasValue) scope.FilterMin = new DateTime(min.Value);
+                    if (max.HasValue) scope.FilterMax = new DateTime(max.Value);
+                }
+            }
+            catch { /* best-effort; scope is informational */ }
+            return scope;
+        }
+
         private sealed class PatternSummaryItem
         {
             public LogSearchIndex.LogPattern Pattern;
             public string Example; // the full raw Content of a representative entry (may be multi-line)
             public List<string> Files = new List<string>(); // distinct short file names this pattern appears in
+            // Event timestamps (UTC ticks) for this pattern's entries, collected while reading the bucket
+            // for the example. Feeds the interactive timeline in the HTML report; empty when unavailable.
+            public List<long> EventTicks = new List<long>();
         }
 
         /// <summary>
@@ -1623,7 +1660,9 @@ namespace NuixLogReviewer
                         if (entry == null) continue;
                         if (rep == null || entry.TimeStamp < rep.TimeStamp) rep = entry;
                         if (!string.IsNullOrEmpty(entry.FileName)) files.Add(entry.FileName);
+                        item.EventTicks.Add(entry.TimeStamp.Ticks); // for the timeline chart (no extra read)
                     }
+                    item.EventTicks.Sort();
                     item.Example = rep?.Content;
                     item.Files = files.OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
                 }
@@ -1675,6 +1714,13 @@ namespace NuixLogReviewer
                 return;
             }
 
+            // The interactive timeline is optional (it's not always the most useful view). Ask per-report.
+            var graphAnswer = MessageBox.Show(
+                "Include the interactive timeline graph in the report?",
+                "Pattern Summary", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (graphAnswer == MessageBoxResult.Cancel) return;
+            bool includeChart = graphAnswer == MessageBoxResult.Yes;
+
             var sfd = new Microsoft.Win32.SaveFileDialog
             {
                 Title = "Save Pattern Summary",
@@ -1683,9 +1729,10 @@ namespace NuixLogReviewer
             };
             if (sfd.ShowDialog() != true) return;
 
+            var scope = BuildReportScope();
             try
             {
-                System.IO.File.WriteAllText(sfd.FileName, BuildSummaryHtmlDocument(items), System.Text.Encoding.UTF8);
+                System.IO.File.WriteAllText(sfd.FileName, BuildSummaryHtmlDocument(items, includeChart, scope), System.Text.Encoding.UTF8);
                 lblStatus.Text = "Summary saved: " + sfd.FileName;
             }
             catch (Exception ex)
@@ -1698,7 +1745,27 @@ namespace NuixLogReviewer
         /// Wraps the HTML summary fragment in a complete, standalone document (doctype, head, styles)
         /// suitable for saving to a .html file and opening in a browser.
         /// </summary>
-        private static string BuildSummaryHtmlDocument(List<PatternSummaryItem> items)
+        // Distinct, print-friendly palette for per-pattern series/swatches (cycles if more patterns).
+        private static readonly string[] PatternPalette =
+        {
+            "#0056E3", "#E3350D", "#0A8A0A", "#8A2BE2", "#E38A00",
+            "#00A0A0", "#C2185B", "#5D4037", "#455A64", "#7CB342"
+        };
+
+        internal static string ColorForIndex(int i) => PatternPalette[i % PatternPalette.Length];
+
+        /// <summary>Reads a vendored asset from Assets/uplot; returns "" if missing so export never fails.</summary>
+        private static string ReadUplotAsset(string fileName)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(ConfigPaths.AppDirectory, "Assets", "uplot", fileName);
+                return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : "";
+            }
+            catch { return ""; }
+        }
+
+        private static string BuildSummaryHtmlDocument(List<PatternSummaryItem> items, bool includeChart, ReportScope scope)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<!DOCTYPE html>");
@@ -1711,10 +1778,141 @@ namespace NuixLogReviewer
             sb.AppendLine("p{margin:4px 0}");
             sb.AppendLine("pre{background:#f4f4f4;border:1px solid #ddd;border-radius:4px;padding:10px;");
             sb.AppendLine("white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:12px;overflow-x:auto}");
+            sb.AppendLine(".pat-swatch{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:baseline}");
+            sb.AppendLine(".chart-card{border:1px solid #e0e0e0;border-radius:6px;padding:12px;margin:12px 0 20px}");
+            sb.AppendLine(".chart-controls{display:flex;gap:16px;align-items:center;margin-bottom:8px;font-size:13px}");
+            sb.AppendLine(".chart-controls .hint,.leadlag .hint{color:#777;font-size:12px}");
+            sb.AppendLine(".leadlag,.bursts{margin-top:12px;font-size:13px}");
+            sb.AppendLine(".leadlag ul,.bursts ul{margin:6px 0}");
+            sb.AppendLine(".leadlag .r{color:#777}");
+            sb.AppendLine(".swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}");
+            sb.AppendLine(".pat-key{border-collapse:collapse;margin:0 0 10px;font-size:12px;width:100%}");
+            sb.AppendLine(".pat-key th,.pat-key td{border-bottom:1px solid #eee;padding:3px 8px;text-align:left;vertical-align:top}");
+            sb.AppendLine(".pat-key th{color:#777;font-weight:600}");
+            sb.AppendLine(".pat-key .pid{font-weight:700;white-space:nowrap}");
+            sb.AppendLine(".pat-key .tmpl{font-family:Consolas,monospace;color:#333;word-break:break-word}");
+            sb.AppendLine(".pat-id{display:inline-block;background:#eef;color:#334;border-radius:3px;padding:0 5px;font-size:12px;font-weight:700;margin-right:4px}");
+            sb.AppendLine(".scope{background:#f6f8fc;border:1px solid #dde3ee;border-radius:6px;padding:10px 12px;margin:8px 0 16px;font-size:13px}");
+            sb.AppendLine(".scope .k{color:#555;display:inline-block;min-width:118px}");
+            sb.AppendLine(".scope code{background:#eef;border-radius:3px;padding:0 4px}");
+            sb.AppendLine(".pat-meta{color:#333;font-size:13px;margin:2px 0}");
+            sb.AppendLine(".pat-files{margin:2px 0 6px;padding-left:22px}");
+            sb.AppendLine(".pat-files li{font-family:Consolas,monospace;font-size:12px;color:#333}");
             sb.AppendLine("</style></head><body>");
-            sb.Append(BuildSummaryHtml(items));   // reuse the same fragment used for rich clipboard
+
+            // Assign a stable color per pattern (by display order) and build the interactive timeline.
+            var colors = new List<string>(items.Count);
+            for (int i = 0; i < items.Count; i++) colors.Add(ColorForIndex(i));
+
+            // Level-aware short identifiers (E1/W1/I1/D1, N# fallback), numbered per level in display order.
+            var ids = AssignPatternIds(items);
+
+            var seriesInputs = new List<Reporting.PatternReportChart.SeriesInput>(items.Count);
+            for (int i = 0; i < items.Count; i++)
+            {
+                seriesInputs.Add(new Reporting.PatternReportChart.SeriesInput
+                {
+                    Id = ids[i],
+                    Template = items[i].Pattern?.Template ?? $"Pattern {i + 1}",
+                    Color = colors[i],
+                    EventTicks = items[i].EventTicks,
+                });
+            }
+
+            var model = Reporting.PatternReportChart.Build(seriesInputs);
+            string uplotJs = includeChart ? ReadUplotAsset("uPlot.iife.min.js") : "";
+            string uplotCss = includeChart ? ReadUplotAsset("uPlot.min.css") : "";
+            string chart = (includeChart && model.HasData && !string.IsNullOrEmpty(uplotJs))
+                ? Reporting.PatternReportChart.BuildChartHtml(model, uplotJs, uplotCss)
+                : "";
+
+            sb.Append("<h1>Log findings</h1>");
+            sb.Append(BuildScopeHtml(scope));
+            if (!string.IsNullOrEmpty(chart)) sb.Append(chart);
+            // BuildSummaryHtml emits its own wrapper; suppress its duplicate H1 by not double-printing.
+            // Pass the per-pattern analytics so each section can show span + peak-burst window even when
+            // the chart is omitted.
+            sb.Append(BuildSummaryHtml(items, colors, ids, model.Analytics, model.BinMs, includeHeading: false));
             sb.AppendLine("</body></html>");
             return sb.ToString();
+        }
+
+        /// <summary>Renders the report-scope banner: the filtered window and, when wider, the full corpus span.</summary>
+        private static string BuildScopeHtml(ReportScope scope)
+        {
+            if (scope == null) return "";
+            var sb = new StringBuilder();
+            sb.Append("<div class=\"scope\">");
+            if (!string.IsNullOrEmpty(scope.Query))
+                sb.Append($"<div><span class=\"k\">Filter query:</span> <code>{HtmlEscape(scope.Query)}</code></div>");
+            else
+                sb.Append("<div><span class=\"k\">Filter query:</span> (all loaded logs)</div>");
+
+            if (scope.FilterMin.HasValue && scope.FilterMax.HasValue)
+            {
+                sb.Append($"<div><span class=\"k\">Report covers:</span> {scope.FilterMin:yyyy-MM-dd HH:mm:ss} → {scope.FilterMax:yyyy-MM-dd HH:mm:ss} " +
+                          $"({HumanizeSpan(scope.FilterMax.Value - scope.FilterMin.Value)})</div>");
+            }
+
+            // Show the corpus span when it's meaningfully wider than the filtered window.
+            if (scope.CorpusMin.HasValue && scope.CorpusMax.HasValue)
+            {
+                bool wider = !scope.FilterMin.HasValue || !scope.FilterMax.HasValue
+                    || scope.CorpusMin.Value < scope.FilterMin.Value.AddSeconds(-1)
+                    || scope.CorpusMax.Value > scope.FilterMax.Value.AddSeconds(1);
+                if (wider)
+                {
+                    sb.Append($"<div><span class=\"k\">Logs loaded span:</span> {scope.CorpusMin:yyyy-MM-dd HH:mm:ss} → {scope.CorpusMax:yyyy-MM-dd HH:mm:ss} " +
+                              $"({HumanizeSpan(scope.CorpusMax.Value - scope.CorpusMin.Value)})</div>");
+                }
+            }
+            sb.Append("</div>");
+            return sb.ToString();
+        }
+
+        /// <summary>Humanizes a duration compactly: "45 s", "12 min", "3.5 h", "4 days".</summary>
+        private static string HumanizeSpan(TimeSpan t)
+        {
+            if (t.TotalSeconds < 1) return "&lt;1 s";
+            if (t.TotalSeconds < 60) return $"{t.TotalSeconds:0} s";
+            if (t.TotalMinutes < 60) return $"{t.TotalMinutes:0} min";
+            if (t.TotalHours < 48) return $"{t.TotalHours:0.#} h";
+            return $"{t.TotalDays:0.#} days";
+        }
+
+        // Inverse of the chart's tick->unix-ms conversion, on the same clock as the entry timestamps
+        // (FirstSeen/LastSeen), so peak-burst window times line up with the first/last-seen times.
+        private static readonly long ReportUnixEpochTicks = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks;
+        private static DateTime UnixMsToDateTime(long unixMs) =>
+            new DateTime(unixMs * TimeSpan.TicksPerMillisecond + ReportUnixEpochTicks);
+
+        /// <summary>
+        /// Assigns each pattern a short, level-aware identifier for the report: a one-letter prefix by
+        /// dominant level (E=ERROR, W=WARN, I=INFO, D=DEBUG, N=none/other) plus a per-level running number,
+        /// in display order. E.g. the first two error patterns become E1, E2. Keeps the chart legend and
+        /// the relationship/burst callouts readable instead of repeating huge templates.
+        /// </summary>
+        private static List<string> AssignPatternIds(List<PatternSummaryItem> items)
+        {
+            var ids = new List<string>(items.Count);
+            var perPrefix = new Dictionary<char, int>();
+            foreach (var it in items)
+            {
+                char prefix;
+                switch (it.Pattern?.DominantLevel)
+                {
+                    case "ERROR": prefix = 'E'; break;
+                    case "WARN": prefix = 'W'; break;
+                    case "INFO": prefix = 'I'; break;
+                    case "DEBUG": prefix = 'D'; break;
+                    default: prefix = 'N'; break;
+                }
+                perPrefix.TryGetValue(prefix, out int n);
+                n++;
+                perPrefix[prefix] = n;
+                ids.Add(prefix.ToString() + n);
+            }
+            return ids;
         }
 
         /// <summary>
@@ -1821,20 +2019,56 @@ namespace NuixLogReviewer
         }
 
         /// <summary>HTML summary: a section per pattern with the example in a &lt;pre&gt;&lt;code&gt; block.</summary>
-        private static string BuildSummaryHtml(List<PatternSummaryItem> items)
+        private static string BuildSummaryHtml(List<PatternSummaryItem> items) => BuildSummaryHtml(items, null, null, null, 0, true);
+
+        /// <summary>
+        /// HTML summary with optional per-pattern colors, ids, and analytics. When supplied, each section
+        /// shows a color swatch + short id (matching the chart), the first→last span, and the peak-burst
+        /// window (count + start/stop times) — the latter available even when the chart is omitted.
+        /// <paramref name="includeHeading"/> emits the "Log findings" H1 (off when the caller already has one).
+        /// </summary>
+        private static string BuildSummaryHtml(List<PatternSummaryItem> items, List<string> colors, List<string> ids,
+            List<Reporting.PatternReportChart.SeriesAnalytics> analytics, long binMs, bool includeHeading = true)
         {
             var sb = new StringBuilder();
             sb.Append("<div style=\"font-family:Segoe UI,Arial,sans-serif\">");
-            sb.Append("<h1>Log findings</h1>");
-            foreach (var it in items)
+            if (includeHeading) sb.Append("<h1>Log findings</h1>");
+            for (int i = 0; i < items.Count; i++)
             {
+                var it = items[i];
                 var p = it.Pattern;
-                sb.Append($"<h2>{HtmlEscape(p.DominantLevel)}: {HtmlEscape(p.Template)}</h2>");
+                string swatch = (colors != null && i < colors.Count)
+                    ? $"<span class=\"pat-swatch\" style=\"background:{HtmlEscape(colors[i])}\"></span>"
+                    : "";
+                string idTag = (ids != null && i < ids.Count)
+                    ? $"<span class=\"pat-id\">{HtmlEscape(ids[i])}</span> "
+                    : "";
+                sb.Append($"<h2>{swatch}{idTag}{HtmlEscape(p.DominantLevel)}: {HtmlEscape(p.Template)}</h2>");
                 sb.Append($"<p><b>Count:</b> {p.Count:N0} ({HtmlEscape(LevelBreakdown(p))})<br/>");
                 sb.Append($"<b>First seen:</b> {p.FirstSeen:yyyy-MM-dd HH:mm:ss} &nbsp; <b>Last seen:</b> {p.LastSeen:yyyy-MM-dd HH:mm:ss}</p>");
+                // Span (first→last): makes clear whether the pattern covers 5 minutes or several days.
+                sb.Append($"<p class=\"pat-meta\"><b>Span:</b> {HumanizeSpan(p.LastSeen - p.FirstSeen)}</p>");
+                // Peak burst window (from the same analytics the chart uses), with real start/stop times.
+                if (analytics != null && i < analytics.Count && binMs > 0)
+                {
+                    var a = analytics[i];
+                    if (a.PeakBinCount > 0)
+                    {
+                        DateTime bStart = UnixMsToDateTime(a.PeakBinMs);
+                        DateTime bEnd = UnixMsToDateTime(a.PeakBinMs + binMs);
+                        double share = a.Count > 0 ? 100.0 * a.PeakBinCount / a.Count : 0;
+                        sb.Append($"<p class=\"pat-meta\"><b>Peak burst:</b> {a.PeakBinCount:N0} events ({share:0}% of this pattern) between " +
+                                  $"{bStart:yyyy-MM-dd HH:mm:ss} and {bEnd:yyyy-MM-dd HH:mm:ss}</p>");
+                    }
+                }
                 if (it.Files != null && it.Files.Count > 0)
                 {
-                    sb.Append($"<p><b>Files ({it.Files.Count}):</b> {HtmlEscape(string.Join(", ", it.Files))}</p>");
+                    sb.Append($"<p><b>Files ({it.Files.Count}):</b></p><ul class=\"pat-files\">");
+                    foreach (var f in it.Files)
+                    {
+                        sb.Append("<li>").Append(HtmlEscape(f)).Append("</li>");
+                    }
+                    sb.Append("</ul>");
                 }
                 if (!string.IsNullOrEmpty(it.Example))
                 {
