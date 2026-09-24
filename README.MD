@@ -17,7 +17,7 @@ The application detects each file's format automatically, so a mixed directory o
 
 Beyond search, it mines the loaded logs into recurring **Patterns**, surfaces automatic **Insights** ("threads to pull on"), and can export a self-contained, shareable **HTML findings report** with an interactive timeline. Both classification and insights are **user-scriptable**.
 
-![image](https://user-images.githubusercontent.com/11775738/81017035-67325d00-8e16-11ea-91df-4b14abd1a41a.png)
+<img width="1010" height="761" alt="Nuix Log Reviewer" src="https://github.com/user-attachments/assets/a90b99b9-ee1f-4464-8aa4-19a4769a3447" />
 
 # Parsing
 
