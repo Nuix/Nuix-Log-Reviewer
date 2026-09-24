@@ -101,7 +101,7 @@ Log entries from multiple files are presented in the user interface as a single 
 # License
 
 ```
-Copyright 2022 Nuix
+Copyright 2026 Nuix
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
