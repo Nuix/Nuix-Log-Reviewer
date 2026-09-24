@@ -56,6 +56,10 @@ flag:worker_log AND level:error
 
 Which should show a listing of entries from any worker logs you have loaded which are of level ERROR.
 
+## Archives
+
+Nuix's rolling log appender compresses prior days' logs into archives, and a copied log directory often contains these alongside the live `*.log` files.  When you **load a directory**, any archives in it are inspected and any inner log files (matching the same name patterns) are loaded automatically — no need to extract them first.  Supported archive types: `.zip`, `.gz`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.bz2`, `.7z`, `.rar`, `.xz`.  Password-protected archives are skipped (you are not prompted, and the rest of the load continues).  A log recovered from an archive shows in the grid's File column as `archive-name/inner-log`.
+
 # Classification
 
 The application performs classification of log entries.  Classifications are indexed in the field `flag` allowing for easier searching.  A selection of the built-in classifiers:

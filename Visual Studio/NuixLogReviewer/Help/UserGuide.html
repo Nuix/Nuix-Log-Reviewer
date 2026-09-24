@@ -106,8 +106,8 @@
     <h2>Loading logs</h2>
     <table>
       <tr><th>Menu</th><th>What it does</th></tr>
-      <tr><td><strong>File &rsaquo; Load Nuix Logs</strong></td><td>Pick one or more individual log files.</td></tr>
-      <tr><td><strong>File &rsaquo; Load Logs from Directory</strong></td><td>Recursively load all <em>structured</em> logs under a folder (see below).</td></tr>
+      <tr><td><strong>File &rsaquo; Load Nuix Logs</strong></td><td>Pick one or more individual log files, or archives (zip/gz/tar/&hellip;) whose inner logs are extracted and loaded.</td></tr>
+      <tr><td><strong>File &rsaquo; Load Logs from Directory</strong></td><td>Recursively load all <em>structured</em> logs under a folder, including any inside archives (see below).</td></tr>
       <tr><td><strong>File &rsaquo; Export Current Entries</strong></td><td>Write the <em>current filtered view</em> back out as a <code>.log</code> file (reconstructed lines).</td></tr>
     </table>
     <div class="note">Loading a new set <strong>replaces</strong> the current session — the grid, patterns, jobs, insights, hidden sets, and history are all reset for the new corpus.</div>
@@ -128,6 +128,7 @@
       <li><strong>Adaptive Security (C++)</strong> — Kubernetes-prefixed <code>date time LEVEL C:… P:… T:… message</code>.</li>
     </ul>
     <p>For the Adaptive formats, the leading Kubernetes/CRI transport timestamp is stripped from every line (including stack-trace continuation lines), and level names are normalized (e.g. <code>EROR</code>&rarr;ERROR, <code>INFORMATION</code>&rarr;INFO). Lines that don't start a new timestamped entry are treated as continuation content of the previous entry, so multi-line messages and stack traces stay together as one entry.</p>
+    <p><strong>Archives.</strong> Nuix's rolling log appender compresses prior days' logs into archives, and a customer's copied log directory often contains these alongside the live <code>*.log</code> files. When you load a directory, any archives in it are inspected and any inner files matching the patterns above are loaded automatically &mdash; no need to unzip first. Supported archive types: <code>.zip</code>, <code>.gz</code>, <code>.tar</code>, <code>.tar.gz</code>/<code>.tgz</code>, <code>.tar.bz2</code>/<code>.tbz2</code>, <code>.bz2</code>, <code>.7z</code>, <code>.rar</code>, <code>.xz</code>. Password-protected archives are skipped (you're not prompted, and the rest of the load continues). Logs recovered from an archive appear in the grid's File column as <code>archive-name/inner-log</code>.</p>
   </section>
 
   <section id="searching">

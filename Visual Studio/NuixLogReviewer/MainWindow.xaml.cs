@@ -330,7 +330,12 @@ namespace NuixLogReviewer
         {
             Microsoft.Win32.OpenFileDialog ofd = new Microsoft.Win32.OpenFileDialog();
             ofd.Title = "Load Nuix Logs";
-            ofd.Filter = "Nuix Logs|nuix*.log*;*.log";
+            // Plain logs plus the archive types the app can look inside (see ArchiveLogExtractor).
+            ofd.Filter =
+                "Logs & archives|nuix*.log*;*.log;*.txt;*.zip;*.gz;*.tgz;*.tar;*.tar.gz;*.tar.bz2;*.tbz2;*.bz2;*.7z;*.rar;*.xz"
+                + "|Log files|nuix*.log*;*.log;*.txt"
+                + "|Archives|*.zip;*.gz;*.tgz;*.tar;*.tar.gz;*.tar.bz2;*.tbz2;*.bz2;*.7z;*.rar;*.xz"
+                + "|All files|*.*";
             ofd.Multiselect = true;
             ofd.InitialDirectory = System.IO.Path.Combine(Environment.GetEnvironmentVariable("LocalAppData"), @"Nuix\Logs");
             if (ofd.ShowDialog() == true)
@@ -340,7 +345,37 @@ namespace NuixLogReviewer
                 repo = new NuixLogRepo();
                 prev.DisposeRepo();
 
-                string[] filesToLoad = ofd.FileNames;
+                // Split the selection into archives and plain files. Any selected archive is inspected
+                // and its matching inner logs are extracted (same as directory load); plain files load
+                // as-is. Extracted copies are content-deduped against the selected plain files.
+                var selected = ofd.FileNames;
+                var plainFiles = selected.Where(f => !ArchiveLogExtractor.IsArchive(f)).ToArray();
+                var selectedArchives = selected.Where(ArchiveLogExtractor.IsArchive).ToArray();
+
+                string[] filesToLoad = plainFiles;
+                if (selectedArchives.Length > 0)
+                {
+                    try
+                    {
+                        string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
+                        var extracted = new List<ArchiveLogExtractor.ExtractedLog>();
+                        foreach (var arc in selectedArchives)
+                        {
+                            extracted.AddRange(ArchiveLogExtractor.ExtractMatchingLogs(
+                                arc, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
+                                warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning))));
+                        }
+                        filesToLoad = LogFileDedup.Combine(
+                            plainFiles, extracted.Select(ex => ex.ExtractedPath).ToList(),
+                            skipped => Dispatcher.BeginInvoke(new Action(() =>
+                                lblStatus.Text = $"Skipped {skipped} archived log(s) already selected as files.")));
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("Archive inspection failed: " + ex.Message);
+                    }
+                }
+
                 loadLogFiles(filesToLoad);
             }
         }
@@ -356,14 +391,47 @@ namespace NuixLogReviewer
             if (dialog.ShowDialog() == true)
             {
                 string selectedDirectory = dialog.SelectedPath;
-                string[] logFiles = FindStructuredLogFiles(selectedDirectory);
+                string[] looseFiles = FindStructuredLogFiles(selectedDirectory);
 
                 // Dispose of current repo
                 NuixLogRepo prev = repo;
                 repo = new NuixLogRepo();
                 prev.DisposeRepo();
 
-                loadLogFiles(logFiles);
+                // Also inspect archives in the directory (Nuix's rolling appender produces zip/gz
+                // rollups for prior days). Matching inner logs are extracted into the new repo's own
+                // folder (so the startup orphan sweep cleans them up) and loaded alongside loose files.
+                // Password-protected archives are skipped. Best-effort: never blocks the load.
+                string[] allFiles = looseFiles;
+                try
+                {
+                    string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
+                    var extracted = ArchiveLogExtractor.ExtractFromDirectory(
+                        selectedDirectory, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
+                        warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning)));
+
+                    if (extracted.Count > 0)
+                    {
+                        // Extracted paths end with "<archiveName>/<innerName>", so the grid's
+                        // shortest-unique-tail display naturally shows e.g. "logs-09-20.zip/nuix.log".
+                        //
+                        // Content-dedup: if the customer's directory also contains an already-extracted
+                        // copy of the same logs (loose files identical to the archive's inner logs), drop
+                        // the redundant archive copies so entries aren't loaded twice. Loose files win.
+                        var extractedPaths = extracted.Select(ex => ex.ExtractedPath).ToList();
+                        allFiles = LogFileDedup.Combine(
+                            looseFiles, extractedPaths,
+                            skipped => Dispatcher.BeginInvoke(new Action(() =>
+                                lblStatus.Text = $"Skipped {skipped} archived log(s) already present as extracted files.")));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Archive inspection is additive; a failure here must not stop loading loose files.
+                    System.Diagnostics.Debug.WriteLine("Archive inspection failed: " + ex.Message);
+                }
+
+                loadLogFiles(allFiles);
             }
         }
 
