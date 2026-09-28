@@ -553,6 +553,12 @@ namespace NuixLogReviewer
             _lastWorkflows = null;
             workflowList.ItemsSource = null;
 
+            // Clear the timeline overlays too. The chart now RETAINS job/workflow tracks across searches
+            // within the same corpus (they persist through drills), so a new log load is the point where
+            // they become invalid and must be explicitly dropped.
+            levelChart.SetJobSpans(null);
+            levelChart.SetWorkflowSpans(null);
+
             // Insights list + label.
             insightList.ItemsSource = null;
             lblInsightsInfo.Text = "";

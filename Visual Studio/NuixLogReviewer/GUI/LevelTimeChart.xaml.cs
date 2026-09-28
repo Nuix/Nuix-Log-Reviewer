@@ -197,13 +197,16 @@ namespace NuixLogReviewer.GUI
             _markerTicks = null;
             _visibleStartTicks = null;
             _visibleEndTicks = null;
-            // A new result set invalidates any previously-overlaid job spans (they were computed for
-            // the old set). The user recomputes Jobs for the new set; keeps the overlay consistent
-            // with the filtered set like the rest of the app.
-            _jobSpans = null;
+            // Overlays (job / workflow tracks) are computed for the whole loaded corpus, not for a
+            // particular filtered view, so they stay valid as the user searches/drills within the same
+            // logs. Keep the span DATA across a new result set and just clear the drawn elements — the
+            // redraw below re-renders them against the new time window (bars outside it simply clip out
+            // and reappear when zoomed back). They're only truly invalidated when NEW logs are loaded,
+            // which resets _lastJobs/_lastWorkflows on the MainWindow side and pushes nulls in via
+            // SetJobSpans(null)/SetWorkflowSpans(null). The selection highlight is dropped on a new view
+            // (navigation naturally changes focus), but the tracks themselves persist.
             _selectedJobId = null;
             clearJobElements();
-            _workflowSpans = null;
             _selectedWorkflow = null;
             clearWorkflowElements();
             selectionRect.Visibility = Visibility.Collapsed;
