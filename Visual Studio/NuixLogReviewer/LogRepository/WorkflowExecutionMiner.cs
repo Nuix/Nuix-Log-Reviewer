@@ -94,6 +94,10 @@ namespace NuixLogReviewer.LogRepository
             public string WaitedOnJobText =>
                 string.IsNullOrEmpty(WaitedOnJobIdPrefix) ? "" : "job " + WaitedOnJobIdPrefix;
 
+            /// <summary>Action-oriented label for the clickable job link, so its purpose is obvious.</summary>
+            public string WaitedOnJobLinkText =>
+                string.IsNullOrEmpty(WaitedOnJobIdPrefix) ? "" : "\u21B3 highlight worker job " + WaitedOnJobIdPrefix;
+
             public string DurationText => FormatDuration(End - Start);
         }
 

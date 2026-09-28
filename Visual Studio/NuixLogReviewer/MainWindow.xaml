@@ -662,8 +662,8 @@
                                                                         </Style.Triggers>
                                                                     </Style>
                                                                 </TextBlock.Style>
-                                                                <Hyperlink Click="operationJobLink_Click" ToolTip="{Binding WaitedOnJobIdPrefix, StringFormat='Worker job {0} — click to highlight it'}">
-                                                                    <Run Text="{Binding WaitedOnJobText, Mode=OneWay}"/>
+                                                                <Hyperlink Click="operationJobLink_Click" ToolTip="{Binding WaitedOnJobIdPrefix, StringFormat='Select and highlight worker job {0} in the Worker jobs list and on the timeline (does not change the grid)'}">
+                                                                    <Run Text="{Binding WaitedOnJobLinkText, Mode=OneWay}"/>
                                                                 </Hyperlink>
                                                             </TextBlock>
                                                         </StackPanel>

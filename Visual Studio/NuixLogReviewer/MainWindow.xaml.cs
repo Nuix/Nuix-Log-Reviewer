@@ -2610,6 +2610,12 @@ namespace NuixLogReviewer
         /// </summary>
         private void workflowList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
+            // A double-click on an operation sub-row bubbles up to the DataGrid and would otherwise ALSO
+            // fire this workflow handler — and since it runs second, it would override the operation
+            // jump with a jump to the workflow start (landing on the first record). Ignore the event
+            // when it originated inside an operation row; operationRow_MouseDoubleClick handles those.
+            if (OriginatesFromOperationRow(e.OriginalSource)) return;
+
             if (!(workflowList.SelectedItem is WorkflowExecutionMiner.WorkflowInfo wf)) return;
 
             long? startId = (wf.Ids != null && wf.Ids.Count > 0)
@@ -2618,6 +2624,26 @@ namespace NuixLogReviewer
             txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", wf.Start.Ticks, wf.End.Ticks);
             performSearch(startId);
             e.Handled = true;
+        }
+
+        /// <summary>
+        /// True if the event's source is within a workflow OPERATION sub-row (a visual whose DataContext
+        /// is an <see cref="WorkflowExecutionMiner.OperationInfo"/>). Used so the workflow-row
+        /// double-click handler defers to the operation handler and they don't both fire.
+        /// </summary>
+        private static bool OriginatesFromOperationRow(object originalSource)
+        {
+            var d = originalSource as DependencyObject;
+            while (d != null)
+            {
+                if (d is FrameworkElement fe && fe.DataContext is WorkflowExecutionMiner.OperationInfo)
+                {
+                    return true;
+                }
+                d = System.Windows.Media.VisualTreeHelper.GetParent(d)
+                    ?? (d is FrameworkElement f ? f.Parent as DependencyObject : null);
+            }
+            return false;
         }
 
         /// <summary>
