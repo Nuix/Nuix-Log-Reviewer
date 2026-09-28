@@ -41,6 +41,22 @@ namespace NuixLogReviewer.GUI
         private static readonly Brush JobSelectedStroke = new SolidColorBrush(Color.FromArgb(0xFF, 0x00, 0x37, 0x9B));
         private static readonly Brush JobOverflowBrush = new SolidColorBrush(Color.FromArgb(0x99, 0x00, 0x37, 0x9B));
 
+        // Workflow-execution overlay: a single lane drawn ABOVE the job lanes (a workflow is the
+        // container; one or more jobs may run within it). Distinct indigo hue so it reads as a different
+        // concept from the blue job bars. Operation boundaries are drawn as faint ticks within the bar,
+        // emphasized for the selected workflow.
+        private System.Collections.Generic.IList<WorkflowExecutionMiner.WorkflowInfo> _workflowSpans;
+        private readonly System.Collections.Generic.List<UIElement> _workflowElements = new System.Collections.Generic.List<UIElement>();
+        private WorkflowExecutionMiner.WorkflowInfo _selectedWorkflow;
+        private const double WorkflowLaneHeight = 8.0;
+        private const double WorkflowLaneGap = 3.0;   // gap below the workflow band before the job lanes
+        private const int WorkflowMaxLanes = 2;       // cap concurrent workflows drawn
+        private static readonly Brush WorkflowBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x7E, 0x57, 0xC2));         // indigo tint (unselected)
+        private static readonly Brush WorkflowSelectedBrush = new SolidColorBrush(Color.FromArgb(0xFF, 0x5E, 0x35, 0xB1)); // full indigo (selected)
+        private static readonly Brush WorkflowSelectedStroke = new SolidColorBrush(Color.FromArgb(0xFF, 0x31, 0x1B, 0x92));
+        private static readonly Brush WorkflowOpTick = new SolidColorBrush(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF));       // faint op-boundary tick
+        private static readonly Brush WorkflowOpTickSelected = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF));
+
         private bool _dragging;
         private double _dragStartX;
         // When true, bar heights are log-compressed (see redraw): height ~ log(1+total), split across
@@ -93,6 +109,11 @@ namespace NuixLogReviewer.GUI
             JobSelectedBrush.Freeze();
             JobSelectedStroke.Freeze();
             JobOverflowBrush.Freeze();
+            WorkflowBrush.Freeze();
+            WorkflowSelectedBrush.Freeze();
+            WorkflowSelectedStroke.Freeze();
+            WorkflowOpTick.Freeze();
+            WorkflowOpTickSelected.Freeze();
         }
 
         public LevelTimeChart()
@@ -182,6 +203,9 @@ namespace NuixLogReviewer.GUI
             _jobSpans = null;
             _selectedJobId = null;
             clearJobElements();
+            _workflowSpans = null;
+            _selectedWorkflow = null;
+            clearWorkflowElements();
             selectionRect.Visibility = Visibility.Collapsed;
             hoverLine.Visibility = Visibility.Collapsed;
             readout.Visibility = Visibility.Collapsed;
@@ -322,6 +346,7 @@ namespace NuixLogReviewer.GUI
             }
 
             applyOverlays();
+            drawWorkflowSpans();
             drawJobSpans();
         }
 
@@ -660,7 +685,7 @@ namespace NuixLogReviewer.GUI
                 laneEndX[lane] = x1 + barW;
 
                 bool overflow = (lane == JobMaxLanes - 1) && laneEndX.Count == JobMaxLanes && ordered.Count > JobMaxLanes;
-                double top = 1.0 + lane * (JobLaneHeight + JobLaneGap);
+                double top = WorkflowBandHeight() + 1.0 + lane * (JobLaneHeight + JobLaneGap);
 
                 bool selected = _selectedJobId != null && string.Equals(job.JobId, _selectedJobId, StringComparison.Ordinal);
 
@@ -695,6 +720,153 @@ namespace NuixLogReviewer.GUI
             {
                 chartCanvas.Children.Add(selectedBar);
                 _jobElements.Add(selectedBar);
+            }
+        }
+
+        // ---- Workflow-execution overlay (drawn above the job lanes) ----
+
+        /// <summary>Height reserved at the top of the strip for the workflow band (0 when none shown).</summary>
+        private double WorkflowBandHeight()
+        {
+            if (_workflowSpans == null || _workflowSpans.Count == 0) return 0.0;
+            int lanes = Math.Min(WorkflowMaxLanes, _workflowSpans.Count);
+            return lanes * (WorkflowLaneHeight + WorkflowLaneGap);
+        }
+
+        /// <summary>
+        /// Overlays the given workflow executions as bars in a band at the very top of the strip, above
+        /// the job lanes. Operation boundaries are drawn as faint ticks within each bar (emphasized for
+        /// the selected workflow). Pass null/empty to clear. Job lanes shift down by the band height.
+        /// </summary>
+        public void SetWorkflowSpans(System.Collections.Generic.IList<WorkflowExecutionMiner.WorkflowInfo> workflows)
+        {
+            _workflowSpans = workflows;
+            drawWorkflowSpans();
+            drawJobSpans(); // job lanes move down/up depending on whether the band is present
+        }
+
+        /// <summary>Emphasizes the bar for the given workflow (full color + outline + brighter op ticks).</summary>
+        public void SetSelectedWorkflow(WorkflowExecutionMiner.WorkflowInfo workflow)
+        {
+            if (ReferenceEquals(_selectedWorkflow, workflow)) return;
+            _selectedWorkflow = workflow;
+            drawWorkflowSpans();
+        }
+
+        private void clearWorkflowElements()
+        {
+            foreach (var el in _workflowElements)
+            {
+                chartCanvas.Children.Remove(el);
+            }
+            _workflowElements.Clear();
+        }
+
+        /// <summary>
+        /// Draws the workflow-execution bars (greedy lane packing like jobs) with operation-boundary
+        /// ticks inside each bar. Sub-pixel-adjacent boundaries are collapsed so tightly-packed short
+        /// operations don't smear into a solid block.
+        /// </summary>
+        private void drawWorkflowSpans()
+        {
+            clearWorkflowElements();
+
+            if (_workflowSpans == null || _workflowSpans.Count == 0) return;
+            if (_series == null || _series.IsEmpty) return;
+
+            double w = chartCanvas.ActualWidth;
+            if (w <= 0) return;
+
+            long min = _series.MinTicks.Value;
+            long max = _series.MaxTicks.Value;
+            if (max <= min) return;
+
+            var ordered = _workflowSpans.OrderBy(wf => wf.Start.Ticks).ToList();
+            var laneEndX = new System.Collections.Generic.List<double>();
+            System.Collections.Generic.List<UIElement> selectedOnTop = null;
+
+            foreach (var wf in ordered)
+            {
+                long s = Math.Max(min, Math.Min(wf.Start.Ticks, wf.End.Ticks));
+                long e = Math.Min(max, Math.Max(wf.Start.Ticks, wf.End.Ticks));
+                if (e < min || s > max) continue;
+
+                double x1 = (double)(s - min) / (max - min) * w;
+                double x2 = (double)(e - min) / (max - min) * w;
+                double barW = Math.Max(2.0, x2 - x1);
+
+                int lane = -1;
+                for (int i = 0; i < laneEndX.Count; i++)
+                {
+                    if (x1 >= laneEndX[i] + 2.0) { lane = i; break; }
+                }
+                if (lane == -1)
+                {
+                    if (laneEndX.Count < WorkflowMaxLanes) { lane = laneEndX.Count; laneEndX.Add(0); }
+                    else { lane = WorkflowMaxLanes - 1; }
+                }
+                laneEndX[lane] = x1 + barW;
+
+                double top = 1.0 + lane * (WorkflowLaneHeight + WorkflowLaneGap);
+                bool selected = ReferenceEquals(wf, _selectedWorkflow);
+
+                var group = new System.Collections.Generic.List<UIElement>();
+
+                var bar = new Rectangle
+                {
+                    Width = barW,
+                    Height = WorkflowLaneHeight,
+                    RadiusX = 2.0,
+                    RadiusY = 2.0,
+                    Fill = selected ? WorkflowSelectedBrush : WorkflowBrush,
+                    Stroke = selected ? WorkflowSelectedStroke : null,
+                    StrokeThickness = selected ? 1.0 : 0.0,
+                    ToolTip = string.Format("{0}\n{1:yyyy-MM-dd HH:mm:ss} \u2192 {2:yyyy-MM-dd HH:mm:ss}  ({3})\n{4} operations{5}",
+                        wf.Name, wf.Start, wf.End, wf.DurationText, wf.OperationCount,
+                        wf.Incomplete ? "  \u2014 incomplete" : ""),
+                };
+                Canvas.SetLeft(bar, x1);
+                Canvas.SetTop(bar, top);
+                group.Add(bar);
+
+                // Operation-boundary ticks within the bar (at each op's start), collapsing near-duplicates.
+                if (wf.Operations != null && wf.Operations.Count > 0)
+                {
+                    double lastTickX = double.NegativeInfinity;
+                    Brush tickBrush = selected ? WorkflowOpTickSelected : WorkflowOpTick;
+                    foreach (var op in wf.Operations)
+                    {
+                        long ot = op.Start.Ticks;
+                        if (ot <= min || ot >= max) continue;
+                        double tx = (double)(ot - min) / (max - min) * w;
+                        if (tx <= x1 + 0.5 || tx >= x1 + barW - 0.5) continue; // inside the bar only
+                        if (tx - lastTickX < 2.0) continue;                    // collapse sub-pixel-adjacent
+                        lastTickX = tx;
+                        var tick = new Rectangle
+                        {
+                            Width = selected ? 1.5 : 1.0,
+                            Height = WorkflowLaneHeight,
+                            Fill = tickBrush,
+                        };
+                        Canvas.SetLeft(tick, tx);
+                        Canvas.SetTop(tick, top);
+                        group.Add(tick);
+                    }
+                }
+
+                if (selected)
+                {
+                    selectedOnTop = group; // draw last so it sits above neighbors
+                }
+                else
+                {
+                    foreach (var el in group) { chartCanvas.Children.Add(el); _workflowElements.Add(el); }
+                }
+            }
+
+            if (selectedOnTop != null)
+            {
+                foreach (var el in selectedOnTop) { chartCanvas.Children.Add(el); _workflowElements.Add(el); }
             }
         }
     }

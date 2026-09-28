@@ -20,20 +20,23 @@
                        Visibility="Collapsed" Canvas.Top="0"/>
 
             <!-- Thin vertical line marking the cursor position on hover. -->
-            <Rectangle x:Name="hoverLine" Width="1" Fill="#FF555555" Visibility="Collapsed" Canvas.Top="0"/>
+            <Rectangle x:Name="hoverLine" Width="1" Fill="#FF555555" Visibility="Collapsed" Canvas.Top="0" Panel.ZIndex="900"/>
 
             <!-- Marker line for the currently selected grid row's event time. -->
-            <Rectangle x:Name="selectionMarker" Width="2" Fill="#FF1565C0" Visibility="Collapsed" Canvas.Top="0"/>
+            <Rectangle x:Name="selectionMarker" Width="2" Fill="#FF1565C0" Visibility="Collapsed" Canvas.Top="0" Panel.ZIndex="900"/>
 
             <!-- Shaded band showing the time span of the rows currently visible in the grid. -->
             <Rectangle x:Name="visibleBand" Fill="#22000000" Stroke="#551565C0" StrokeThickness="1"
                        Visibility="Collapsed" Canvas.Top="0"/>
 
-            <!-- Floating readout showing the time under the cursor, or the selection start/end. -->
+            <!-- Floating readout showing the time under the cursor, or the selection start/end.
+                 High ZIndex so it stays above the dynamically-added job/workflow overlay bars, which
+                 are appended to this same canvas after it in document order. -->
             <Border x:Name="readout" Background="#E6202020" CornerRadius="2" Padding="4,1"
-                    Visibility="Collapsed" IsHitTestVisible="False">
+                    Panel.ZIndex="1000" Visibility="Collapsed" IsHitTestVisible="False">
                 <TextBlock x:Name="readoutText" Foreground="White" FontFamily="Consolas" FontSize="11"/>
             </Border>
+            <!-- Keep the hover line and selection marker above the overlay bars too. -->
         </Canvas>
 
         <!-- Placeholder / loading text shown when there is no data or a computation is in flight. -->
@@ -42,9 +45,13 @@
 
         <!-- Log-Y toggle, pinned to the top-right. Log-compresses bar heights so rare buckets (e.g. a
              small ERROR spike) stay visible next to a huge one (e.g. a throttling wall). -->
-        <CheckBox x:Name="chkLogScale" Content="Log" HorizontalAlignment="Right" VerticalAlignment="Top"
-                  Margin="0,1,4,0" FontSize="10" Foreground="#FF555555" Background="#CCFFFFFF"
-                  IsChecked="True" Click="chkLogScale_Click"
-                  ToolTip="Log-scale the Y axis. Heights become log-compressed (proportional per level), so small/rare buckets stay visible next to very tall ones."/>
+        <!-- Opaque backing so the timeline overlay bars (e.g. the workflow band at the top edge) don't
+             show through behind the translucent checkbox label. -->
+        <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,1,4,0"
+                Background="#F7FAFAFA" CornerRadius="2" Panel.ZIndex="1000" Padding="2,0">
+            <CheckBox x:Name="chkLogScale" Content="Log" FontSize="10" Foreground="#FF555555"
+                      IsChecked="True" Click="chkLogScale_Click"
+                      ToolTip="Log-scale the Y axis. Heights become log-compressed (proportional per level), so small/rare buckets stay visible next to very tall ones."/>
+        </Border>
     </Grid>
 </UserControl>

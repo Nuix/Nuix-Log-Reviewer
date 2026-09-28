@@ -88,6 +88,15 @@ You can also add your **own** classifiers as sandboxed JavaScript files in `Conf
 
 The **Patterns** tab mines the loaded logs into recurring message templates (with variable parts masked), so you can see the shape of what's in the logs at a glance and how often each occurs. Patterns can be expanded into sub-patterns (by worker, exception, or sub-template), shown/hidden, and drilled into. Selected patterns can be exported as a findings report (see below).
 
+# Jobs & Workflows
+
+The **Jobs / Workflows** tab reconstructs two related units of Automate/engine activity from the current results:
+
+- **Worker jobs** — grouped by the `job-<id>` worker folder, with each job's lifespan and entry/warn/error counts.
+- **Workflow executions** — Automate engine-log workflow runs, delineated by the engine's own lifecycle logging. Each workflow can be expanded to show its per-operation breakdown with individual durations, so a long-running step stands out at a glance. Where the engine log names the worker job an operation waited on, that link is shown.
+
+A workflow may launch one or more worker jobs. On the timeline they appear as time-aligned tracks — workflows above, worker jobs below — so activity within a workflow is easy to place. The two are kept independent (no parent/child link is inferred from timing alone).
+
 # Insights
 
 Click **Analyze** on the **Insights** tab for automatic findings — "threads to pull on" — across the whole loaded corpus: error spikes, silence gaps, error ramp-ups, first-error onset, and resource/throttling problems (out-of-memory, GC pressure, disk space). Each finding carries a ready-to-run query; double-click to jump to the evidence.

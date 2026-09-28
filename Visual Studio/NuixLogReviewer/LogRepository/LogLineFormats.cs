@@ -123,10 +123,13 @@ namespace NuixLogReviewer.LogRepository
         public static readonly LogLineFormat Nuix = new LogLineFormat("Nuix/Automate/Derby", NuixHeader, (m, e) =>
         {
             string ts = m.Groups["timestamp"].Value.Replace(',', '.'); // Derby uses comma millis
-            if (m.Groups["tz"].Success && m.Groups["tz"].Value.Length > 0)
-                e.TimeStamp = DateTime.ParseExact(ts + " " + m.Groups["tz"].Value, "yyyy-MM-dd HH:mm:ss.fff zzz", Culture);
-            else
-                e.TimeStamp = DateTime.ParseExact(ts, "yyyy-MM-dd HH:mm:ss.fff", Culture);
+            // Parse the wall-clock time EXACTLY as written and ignore any trailing offset token. Nuix
+            // logs are overwhelmingly written in local wall-clock with no offset, and those are shown
+            // as-is; a line that DOES carry an offset (e.g. worker logs' "+0000") must not be shifted to
+            // the viewer's machine-local time, or the same instant would display hours apart from the
+            // offset-less engine/Automate lines in the merged chronological grid (making correlated
+            // worker + workflow events look disjoint). Wall-clock-as-written keeps them aligned.
+            e.TimeStamp = DateTime.ParseExact(ts, "yyyy-MM-dd HH:mm:ss.fff", Culture);
 
             e.Channel = m.Groups["channel"].Value.Trim();
             e.Elapsed = (m.Groups["elapsed"].Success && m.Groups["elapsed"].Value.Length > 0)

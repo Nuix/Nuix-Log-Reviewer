@@ -593,44 +593,127 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Jobs" x:Name="tabJobs">
+            <TabItem Header="Jobs / Workflows" x:Name="tabJobs">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <DockPanel Grid.Row="0" LastChildFill="False" Margin="2">
-                        <Button x:Name="btnComputeJobs" DockPanel.Dock="Left" Content="Compute Jobs"
+                        <Button x:Name="btnComputeJobs" DockPanel.Dock="Left" Content="Compute"
                                 Click="btnComputeJobs_Click"
-                                ToolTip="Group the current results into worker jobs and show each job's lifespan."/>
+                                ToolTip="Group the current results into worker jobs and Automate workflow executions, and show each one's lifespan."/>
                         <CheckBox x:Name="chkShowJobsOnChart" DockPanel.Dock="Left" Content="Show on timeline"
                                   IsChecked="True" VerticalAlignment="Center" Margin="10,0,0,0"
                                   Click="chkShowJobsOnChart_Click"
-                                  ToolTip="Overlay the computed job lifespans as brackets above the timeline chart."/>
+                                  ToolTip="Overlay the computed workflow (top) and job (below) lifespans on the timeline chart."/>
                     </DockPanel>
-                    <ListView x:Name="jobList" Grid.Row="1" MouseDoubleClick="jobList_MouseDoubleClick"
-                              GridViewColumnHeader.Click="jobList_ColumnHeaderClick"
-                              SelectionChanged="jobList_SelectionChanged"
-                              SelectionMode="Extended"
-                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                              ScrollViewer.VerticalScrollBarVisibility="Auto">
-                        <ListView.ItemContainerStyle>
-                            <Style TargetType="ListViewItem">
-                                <Setter Property="ToolTip" Value="{Binding JobId}"/>
-                            </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.View>
-                            <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
-                                <GridViewColumn Header="Job" DisplayMemberBinding="{Binding JobId}" Width="290"/>
-                                <GridViewColumn Header="Start" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
-                                <GridViewColumn Header="End" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
-                                <GridViewColumn Header="Duration" DisplayMemberBinding="{Binding DurationText}" Width="90"/>
-                                <GridViewColumn Header="Entries" DisplayMemberBinding="{Binding EntryCount, StringFormat='{}{0:N0}'}" Width="70"/>
-                                <GridViewColumn Header="Warns" DisplayMemberBinding="{Binding WarnCount, StringFormat='{}{0:N0}'}" Width="60"/>
-                                <GridViewColumn Header="Errors" DisplayMemberBinding="{Binding ErrorCount, StringFormat='{}{0:N0}'}" Width="60"/>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
+                    <Grid Grid.Row="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" MinHeight="80"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*" MinHeight="80"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Workflows (expandable to show per-operation durations) -->
+                        <DockPanel Grid.Row="0" LastChildFill="True">
+                            <TextBlock DockPanel.Dock="Top" Text="Workflow executions" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Brush.TextMuted}" Margin="2,2,0,2"/>
+                            <DataGrid x:Name="workflowList" AutoGenerateColumns="False" IsReadOnly="True"
+                                      HeadersVisibility="Column" CanUserAddRows="False" GridLinesVisibility="None"
+                                      RowDetailsVisibilityMode="VisibleWhenSelected"
+                                      MouseDoubleClick="workflowList_MouseDoubleClick"
+                                      SelectionChanged="workflowList_SelectionChanged"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Workflow" Binding="{Binding Name}" Width="260"/>
+                                    <DataGridTextColumn Header="Start" Binding="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                    <DataGridTextColumn Header="End" Binding="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                    <DataGridTextColumn Header="Duration" Binding="{Binding DurationText}" Width="90"/>
+                                    <DataGridTextColumn Header="Operations" Binding="{Binding OperationCount}" Width="80"/>
+                                </DataGrid.Columns>
+                                <DataGrid.RowDetailsTemplate>
+                                    <DataTemplate>
+                                        <!-- Per-operation breakdown: index/name, span, duration, and any linked worker job. -->
+                                        <ItemsControl ItemsSource="{Binding Operations}" Margin="24,2,4,6">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border x:Name="opRow" Padding="4,2" CornerRadius="2" Background="Transparent"
+                                                            MouseDown="operationRow_MouseDoubleClick"
+                                                            ToolTip="Double-click to jump to this operation's start in the grid">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Index, StringFormat='{}{0}. '}" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Text="{Binding Name}" Width="240" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Text="{Binding DurationText}" Width="90" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding Start, StringFormat='{}{0:HH:mm:ss}'}" Width="80" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Text="{Binding End, StringFormat='→ {0:HH:mm:ss}'}" Width="90" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <!-- Clickable link to the worker job this operation waited on (resolved by GUID).
+                                                                 Selects + highlights the job without disturbing the current grid view. Hidden
+                                                                 for operations that didn't wait on a job (empty WaitedOnJobText). -->
+                                                            <TextBlock VerticalAlignment="Center">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding WaitedOnJobText}" Value="">
+                                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                                <Hyperlink Click="operationJobLink_Click" ToolTip="{Binding WaitedOnJobIdPrefix, StringFormat='Worker job {0} — click to highlight it'}">
+                                                                    <Run Text="{Binding WaitedOnJobText, Mode=OneWay}"/>
+                                                                </Hyperlink>
+                                                            </TextBlock>
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <DataTemplate.Triggers>
+                                                        <Trigger SourceName="opRow" Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="opRow" Property="Background" Value="#1A0056E3"/>
+                                                            <Setter TargetName="opRow" Property="Cursor" Value="Hand"/>
+                                                        </Trigger>
+                                                    </DataTemplate.Triggers>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </DataTemplate>
+                                </DataGrid.RowDetailsTemplate>
+                            </DataGrid>
+                        </DockPanel>
+
+                        <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch"
+                                      Background="{StaticResource Brush.TextMuted}" Opacity="0.3"/>
+
+                        <!-- Worker jobs -->
+                        <DockPanel Grid.Row="2" LastChildFill="True">
+                            <TextBlock DockPanel.Dock="Top" Text="Worker jobs" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Brush.TextMuted}" Margin="2,2,0,2"/>
+                            <ListView x:Name="jobList" MouseDoubleClick="jobList_MouseDoubleClick"
+                                      GridViewColumnHeader.Click="jobList_ColumnHeaderClick"
+                                      SelectionChanged="jobList_SelectionChanged"
+                                      SelectionMode="Extended"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="ToolTip" Value="{Binding JobId}"/>
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.View>
+                                    <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
+                                        <GridViewColumn Header="Job" DisplayMemberBinding="{Binding JobId}" Width="290"/>
+                                        <GridViewColumn Header="Start" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                        <GridViewColumn Header="End" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
+                                        <GridViewColumn Header="Duration" DisplayMemberBinding="{Binding DurationText}" Width="90"/>
+                                        <GridViewColumn Header="Entries" DisplayMemberBinding="{Binding EntryCount, StringFormat='{}{0:N0}'}" Width="70"/>
+                                        <GridViewColumn Header="Warns" DisplayMemberBinding="{Binding WarnCount, StringFormat='{}{0:N0}'}" Width="60"/>
+                                        <GridViewColumn Header="Errors" DisplayMemberBinding="{Binding ErrorCount, StringFormat='{}{0:N0}'}" Width="60"/>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </Grid>
                 </Grid>
             </TabItem>
             <TabItem Header="Insights" x:Name="tabInsights">

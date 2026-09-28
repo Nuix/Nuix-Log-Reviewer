@@ -71,7 +71,7 @@
     <li><a class="child" href="#tab-classifiers">Classifiers</a></li>
     <li><a class="child" href="#tab-files">Files</a></li>
     <li><a class="child" href="#tab-patterns">Patterns</a></li>
-    <li><a class="child" href="#tab-jobs">Jobs</a></li>
+    <li><a class="child" href="#tab-jobs">Jobs / Workflows</a></li>
     <li><a class="child" href="#tab-insights">Insights</a></li>
     <li><a class="section" href="#history">History &amp; saved searches</a></li>
     <li><a class="section" href="#config">Configuration</a></li>
@@ -204,7 +204,7 @@ job:job-abcdef0123456789abcdef0123456789 AND level:error</code></pre>
       <li><strong>Click</strong> to scroll the grid to the nearest event at or before that time (doesn't change the search).</li>
       <li><strong>Hover</strong> for a timestamp readout. A marker shows the selected row's time; a shaded band shows the currently-visible rows.</li>
       <li><strong>Log</strong> toggle (top-right, <em>on by default</em>) log-compresses bar heights so small/rare buckets stay visible next to a very tall one (e.g. a spike of errors next to a wall of retries). Uncheck it for linear heights when you care about relative volume.</li>
-      <li><strong>Job lanes</strong> — when Jobs are computed and "Show on timeline" is on, worker job lifespans are drawn as brackets above the bars; selecting a job in the Jobs tab emphasizes its bracket.</li>
+      <li><strong>Job &amp; workflow tracks</strong> — when computed and "Show on timeline" is on, workflow executions are drawn as a track above the worker job lanes (distinct color, with operation-boundary ticks); selecting a row in the Jobs / Workflows tab emphasizes its bar.</li>
     </ul>
   </section>
 
@@ -242,7 +242,13 @@ job:job-abcdef0123456789abcdef0123456789 AND level:error</code></pre>
     <p>Whether or not the graph is included, the report is fully self-contained and works offline with no network access, so it's safe to hand to a third party.</p>
 
     <h3 id="tab-jobs">Jobs</h3>
-    <p><strong>Compute Jobs</strong> groups worker entries by job id and shows each job's lifespan (first/last event), entry/warn/error counts. Double-click to drill to <code>job:&lt;id&gt;</code>; selecting a row highlights the job on the timeline.</p>
+    <h3 id="tab-jobs">Jobs / Workflows</h3>
+    <p><strong>Compute</strong> derives two related things from the current results and shows them together:</p>
+    <ul>
+      <li><strong>Worker jobs</strong> — grouped by the <code>job-&lt;id&gt;</code> worker folder, each with its lifespan (first/last event) and entry/warn/error counts. Double-click to drill to <code>job:&lt;id&gt;</code>; selecting a row highlights the job on the timeline.</li>
+      <li><strong>Workflow executions</strong> — Automate engine-log workflow runs, delineated by the engine's own lifecycle logging (not the file path). Each shows its name, start/end, duration, and operation count. <strong>Expand a workflow</strong> to see its per-operation breakdown with each operation's duration — so a long-running step (e.g. an <em>Add Evidence</em> that ran for an hour) stands out immediately. Double-click a workflow to drill to its entries; double-click an operation to keep the workflow in view and jump to where that operation began. Where the engine log explicitly names the worker engine job an operation waited on, that job id is shown on the operation.</li>
+    </ul>
+    <p>A single workflow execution may launch one or more worker jobs (for example, an ingestion operation runs a worker-based job). On the timeline, workflows are drawn as a track <em>above</em> the job lanes and in a distinct color, with faint ticks marking operation boundaries; because the tracks are time-aligned, a worker job running inside a workflow's span lines up directly beneath it. The two are shown as independent tracks — the app does not infer a parent/child link from timing alone.</p>
 
     <h3 id="tab-insights">Insights</h3>
     <p><strong>Analyze</strong> scans the whole loaded corpus and lists notable findings — "threads to pull on" — grouped by source. Each finding has a severity (<span class="pill crit">Critical</span> <span class="pill warn">Warning</span> <span class="pill notice">Notice</span> <span class="pill info">Info</span>) and, usually, a ready-made query. <strong>Double-click</strong> a finding to run its query and jump to the evidence.</p>

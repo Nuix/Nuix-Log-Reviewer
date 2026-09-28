@@ -549,6 +549,10 @@ namespace NuixLogReviewer
             _lastJobs = null;
             jobList.ItemsSource = null;
 
+            // Workflows snapshot + list.
+            _lastWorkflows = null;
+            workflowList.ItemsSource = null;
+
             // Insights list + label.
             insightList.ItemsSource = null;
             lblInsightsInfo.Text = "";
@@ -2388,17 +2392,21 @@ namespace NuixLogReviewer
             refreshFindForNewResults();
         }
 
-        // ===================== Jobs tab =====================
+        // ===================== Jobs / Workflows tab =====================
 
         /// <summary>The most recently computed jobs, retained so the sort and the chart overlay can reuse them.</summary>
         private IList<LogSearchIndex.JobInfo> _lastJobs;
         private string _jobSortHeader = "Start";
         private bool _jobSortAscending = true;
 
+        /// <summary>The most recently computed workflow executions (Automate engine-log lifecycle).</summary>
+        private IList<WorkflowExecutionMiner.WorkflowInfo> _lastWorkflows;
+
         /// <summary>
-        /// Groups the current result set into worker jobs and shows them in the Jobs tab. Runs off the
-        /// UI thread (like search / patterns) since the single-pass grouping can take a moment on a
-        /// large set. When "Show on timeline" is checked, the computed spans are also overlaid on the chart.
+        /// Computes BOTH worker jobs (path-derived) and Automate workflow executions (engine-log
+        /// lifecycle) for the current result set, and shows them in the Jobs / Workflows tab. Runs off
+        /// the UI thread (like search / patterns) since the passes can take a moment on a large set.
+        /// When "Show on timeline" is checked, both are overlaid on the chart (workflows above jobs).
         /// </summary>
         private void btnComputeJobs_Click(object sender, RoutedEventArgs e)
         {
@@ -2409,7 +2417,7 @@ namespace NuixLogReviewer
             }
 
             IsBusy = true;
-            lblStatus.Text = "Computing jobs...";
+            lblStatus.Text = "Computing jobs and workflows...";
             lblProgress.Text = "";
             string query = txtSearchQuery.Text;
 
@@ -2418,10 +2426,14 @@ namespace NuixLogReviewer
                 try
                 {
                     var jobs = repo.GetJobs(query);
+                    var workflows = repo.GetWorkflows(query);
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         _lastJobs = jobs;
+                        _lastWorkflows = workflows;
+                        resolveWorkflowJobLinks();
                         applyJobSort();
+                        bindWorkflows();
                         bottomTabs.SelectedItem = tabJobs;
                         updateJobChartOverlay();
                         IsBusy = false;
@@ -2436,6 +2448,35 @@ namespace NuixLogReviewer
                     }));
                 }
             });
+        }
+
+        /// <summary>Binds the computed workflow executions (ordered by start) to the workflow list.</summary>
+        private void bindWorkflows()
+        {
+            workflowList.ItemsSource = _lastWorkflows?.OrderBy(w => w.Start).ToList();
+        }
+
+        /// <summary>
+        /// Resolves each workflow operation's "waited on Nuix Engine Job &lt;guid&gt;" reference to a
+        /// specific computed worker job, when exactly one job's id matches (by normalized 32-hex GUID).
+        /// This is the concrete, identifier-based workflow&#8596;job link (no timing guesswork). Only a
+        /// UNIQUE match is linked; an ambiguous or absent match leaves the operation unresolved.
+        /// </summary>
+        private void resolveWorkflowJobLinks()
+        {
+            if (_lastWorkflows == null) return;
+            var jobs = _lastJobs ?? new List<LogSearchIndex.JobInfo>();
+            foreach (var wf in _lastWorkflows)
+            {
+                foreach (var op in wf.Operations)
+                {
+                    op.ResolvedJobId = null;
+                    string norm = op.WaitedOnJobIdNormalized;
+                    if (string.IsNullOrEmpty(norm)) continue;
+                    var matches = jobs.Where(j => (j.JobId ?? "").Replace("-", "").ToLowerInvariant().Contains(norm)).ToList();
+                    if (matches.Count == 1) op.ResolvedJobId = matches[0].JobId;
+                }
+            }
         }
 
         /// <summary>Re-orders the last computed jobs per the active sort column/direction and binds them.</summary>
@@ -2548,6 +2589,100 @@ namespace NuixLogReviewer
             {
                 levelChart.SetJobSpans(null);
             }
+
+            // Workflows share the "Show on timeline" toggle; they render as a track above the job lanes.
+            if (chkShowJobsOnChart.IsChecked == true && _lastWorkflows != null)
+            {
+                levelChart.SetWorkflowSpans(_lastWorkflows);
+            }
+            else
+            {
+                levelChart.SetWorkflowSpans(null);
+            }
+        }
+
+        /// <summary>
+        /// Double-clicking a workflow drills the grid to that workflow's entries. Workflows have no
+        /// indexed field to query (unlike jobs), so we push the workflow's contributing entry ids into
+        /// the grid directly (same path as the Patterns drill-down).
+        /// </summary>
+        private void workflowList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (!(workflowList.SelectedItem is WorkflowExecutionMiner.WorkflowInfo wf) || wf.Ids == null || wf.Ids.Count == 0)
+            {
+                return;
+            }
+            showIdsInGrid(wf.Ids as IList<long> ?? wf.Ids.ToList());
+        }
+
+        /// <summary>
+        /// Double-clicking an OPERATION sub-row keeps the workflow in view and positions the grid at the
+        /// operation's start (rather than filtering to just that operation, which would lose surrounding
+        /// context). Filters to the parent workflow first, then selects the entry at/before the op start
+        /// using the same "nearest event" logic as a timeline click.
+        /// </summary>
+        private void operationRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount != 2) return; // require a real double-click (matches the row tooltip)
+            if (!(sender is FrameworkElement fe) || !(fe.DataContext is WorkflowExecutionMiner.OperationInfo op)) return;
+            // Find the parent workflow (the row whose Operations contain this op).
+            var wf = _lastWorkflows?.FirstOrDefault(w => w.Operations.Contains(op));
+            if (wf == null || wf.Ids == null || wf.Ids.Count == 0) return;
+
+            var ids = wf.Ids as IList<long> ?? wf.Ids.ToList();
+            showIdsInGrid(ids);
+
+            // After filtering to the workflow, park the grid at the operation's start time by selecting
+            // the workflow entry nearest (at/before) the op start — same "nearest event" idea as a
+            // timeline click, scoped to this workflow's entries.
+            long? nearest = repo.FindEntryIdAtOrBeforeInIds(ids, op.Start.Ticks);
+            if (nearest.HasValue) resultsGrid.SelectAndScrollTo(nearest.Value);
+            e.Handled = true;
+        }
+
+        /// <summary>Highlights the selected workflow's bar on the timeline (or clears it when none).</summary>
+        private void workflowList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var wf = workflowList.SelectedItem as WorkflowExecutionMiner.WorkflowInfo;
+            levelChart.SetSelectedWorkflow(wf);
+        }
+
+        /// <summary>
+        /// Clicking an operation's "job &lt;guid&gt;" link selects and highlights the worker job it waited
+        /// on — in the Worker jobs list and on the timeline — WITHOUT changing the current grid view, so
+        /// you don't lose whatever you're looking at. This is the concrete workflow&#8596;job link,
+        /// resolved by matching the full job GUID (see resolveWorkflowJobLinks).
+        /// </summary>
+        private void operationJobLink_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(sender is FrameworkElement fe) || !(fe.DataContext is WorkflowExecutionMiner.OperationInfo op)) return;
+
+            // Prefer the pre-resolved job id; otherwise resolve on the fly by normalized GUID.
+            string norm = op.WaitedOnJobIdNormalized;
+            LogSearchIndex.JobInfo job = null;
+            if (_lastJobs != null)
+            {
+                if (op.HasResolvedJob)
+                    job = _lastJobs.FirstOrDefault(j => string.Equals(j.JobId, op.ResolvedJobId, StringComparison.OrdinalIgnoreCase));
+                if (job == null && !string.IsNullOrEmpty(norm))
+                {
+                    var matches = _lastJobs.Where(j => (j.JobId ?? "").Replace("-", "").ToLowerInvariant().Contains(norm)).ToList();
+                    if (matches.Count == 1) job = matches[0];
+                }
+            }
+
+            if (job == null)
+            {
+                lblStatus.Text = "No matching worker job is loaded for " + op.WaitedOnJobText + ".";
+                return;
+            }
+
+            // Select + reveal in the jobs list, and highlight its lane on the timeline. No grid change.
+            jobList.SelectedItem = job;
+            jobList.ScrollIntoView(job);
+            levelChart.SetSelectedJob(job.JobId);
+            lblStatus.Text = "Highlighted worker job " + job.JobId + " (linked from operation \u201c" + op.Name + "\u201d).";
+            e.Handled = true;
         }
 
 

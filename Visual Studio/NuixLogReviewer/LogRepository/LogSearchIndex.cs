@@ -421,6 +421,41 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
+        /// Returns the ids of entries that could contribute to a workflow execution within the given
+        /// user query: the query (blank = all) AND a source in {WorkflowExecution, NuixUtils}. Focusing
+        /// on those two components keeps <see cref="NuixLogRepo.GetWorkflows"/> cheap — it only reads the
+        /// handful of lifecycle/wait entries rather than the whole engine log. Ids are time-sorted so the
+        /// miner sees entries in order.
+        /// </summary>
+        public IList<long> WorkflowCandidateIds(NuixLogRepo repo, string queryString)
+        {
+            // Source values are indexed with a LowerCaseKeywordAnalyzer (whole value => one lowercased
+            // token), so an exact TermQuery on the lowercased source matches precisely.
+            var sourceClause = new BooleanQuery
+            {
+                { new TermQuery(new Term("source", WorkflowExecutionMiner.WorkflowSource.ToLowerInvariant())), Occur.SHOULD },
+                { new TermQuery(new Term("source", WorkflowExecutionMiner.NuixUtilsSource.ToLowerInvariant())), Occur.SHOULD },
+            };
+
+            Query baseQ;
+            if (string.IsNullOrWhiteSpace(queryString))
+            {
+                baseQ = new MatchAllDocsQuery();
+            }
+            else
+            {
+                baseQ = ParseQuery(NotFixRegex.Replace(queryString, "NOT"));
+            }
+
+            var query = new BooleanQuery
+            {
+                { baseQ, Occur.MUST },
+                { sourceClause, Occur.MUST },
+            };
+            return SearchIds(query);
+        }
+
+        /// <summary>
         /// Builds an executable query from a base query STRING plus a set of hidden templates, WITHOUT
         /// routing the (potentially hundreds of) templates through the classic QueryParser. Hidden
         /// templates are applied as a single <see cref="FieldCacheTermsFilter"/> MUST_NOT over the

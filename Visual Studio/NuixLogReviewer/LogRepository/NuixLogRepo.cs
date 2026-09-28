@@ -353,6 +353,20 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
+        /// Reconstructs Automate workflow executions (with their operation breakdown) from the engine
+        /// logs in the current filtered set. Unlike jobs (path-derived), workflows are delineated by
+        /// lifecycle lines the engine logs, so this focuses on the two relevant source components,
+        /// reads their entries, and mines them (see <see cref="WorkflowExecutionMiner"/>).
+        /// </summary>
+        public IList<WorkflowExecutionMiner.WorkflowInfo> GetWorkflows(string query)
+        {
+            var ids = SearchIndex.WorkflowCandidateIds(this, query);
+            if (ids == null || ids.Count == 0) return new List<WorkflowExecutionMiner.WorkflowInfo>();
+            var entries = Database.ReadEntries(ids);
+            return WorkflowExecutionMiner.Mine(entries);
+        }
+
+        /// <summary>
         /// Analyzes the WHOLE loaded corpus ("of the logs loaded, here are threads to pull on"): builds
         /// a frozen <see cref="Insights.InsightContext"/> from the existing whole-set summary passes and
         /// runs the built-in insight detectors over it. Whole-set and blank-query (unaffected by the
@@ -468,6 +482,27 @@ namespace NuixLogReviewer.LogRepository
         public long? FindEntryIdAtOrBefore(string query, IReadOnlyCollection<string> hiddenTemplates, long ticks)
         {
             return SearchIndex.FindEntryIdAtOrBefore(query, hiddenTemplates, ticks);
+        }
+
+        /// <summary>
+        /// Among a specific set of entry ids, returns the id whose event time is the latest at or before
+        /// <paramref name="ticks"/> (i.e. "round backwards" within that set). Falls back to the earliest
+        /// id in the set when all of them are after <paramref name="ticks"/>. Used to park the grid at a
+        /// workflow operation's start after drilling to the workflow's entries. Null if the set is empty.
+        /// </summary>
+        public long? FindEntryIdAtOrBeforeInIds(IEnumerable<long> ids, long ticks)
+        {
+            if (ids == null) return null;
+            long? bestBefore = null; long bestBeforeTicks = long.MinValue;
+            long? earliest = null; long earliestTicks = long.MaxValue;
+            foreach (var entry in Database.ReadEntries(ids))
+            {
+                if (entry == null) continue;
+                long t = entry.TimeStamp.Ticks;
+                if (t <= ticks && t > bestBeforeTicks) { bestBeforeTicks = t; bestBefore = entry.ID; }
+                if (t < earliestTicks) { earliestTicks = t; earliest = entry.ID; }
+            }
+            return bestBefore ?? earliest;
         }
 
         /// <summary>
