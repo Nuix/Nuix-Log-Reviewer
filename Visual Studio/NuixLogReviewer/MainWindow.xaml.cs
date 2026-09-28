@@ -2602,24 +2602,29 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
-        /// Double-clicking a workflow drills the grid to that workflow's entries. Workflows have no
-        /// indexed field to query (unlike jobs), so we push the workflow's contributing entry ids into
-        /// the grid directly (same path as the Patterns drill-down).
+        /// Double-clicking a workflow scopes the grid to that workflow's full time range across ALL
+        /// loaded logs (engine orchestration + any worker logs active during the run), then jumps to the
+        /// workflow's start — the same time-window model as the operation drill, so double-clicking a
+        /// workflow or one of its operations both show the run in context rather than only the engine's
+        /// own lifecycle lines.
         /// </summary>
         private void workflowList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (!(workflowList.SelectedItem is WorkflowExecutionMiner.WorkflowInfo wf) || wf.Ids == null || wf.Ids.Count == 0)
-            {
-                return;
-            }
-            showIdsInGrid(wf.Ids as IList<long> ?? wf.Ids.ToList());
+            if (!(workflowList.SelectedItem is WorkflowExecutionMiner.WorkflowInfo wf)) return;
+
+            long? startId = (wf.Ids != null && wf.Ids.Count > 0)
+                ? repo.FindEntryIdAtOrBeforeInIds(wf.Ids as IList<long> ?? wf.Ids.ToList(), wf.Start.Ticks)
+                : null;
+            txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", wf.Start.Ticks, wf.End.Ticks);
+            performSearch(startId);
+            e.Handled = true;
         }
 
         /// <summary>
-        /// Double-clicking an OPERATION sub-row keeps the workflow in view and positions the grid at the
-        /// operation's start (rather than filtering to just that operation, which would lose surrounding
-        /// context). Filters to the parent workflow first, then selects the entry at/before the op start
-        /// using the same "nearest event" logic as a timeline click.
+        /// Double-clicking an OPERATION sub-row scopes the grid to the PARENT WORKFLOW's full time range
+        /// (so the whole run is in view — engine orchestration and any worker logs active in that window,
+        /// not just the workflow's own lifecycle lines), then jumps to the operation's start event. This
+        /// lets you scroll into the operations on either side rather than being clipped to one operation.
         /// </summary>
         private void operationRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
@@ -2627,16 +2632,18 @@ namespace NuixLogReviewer
             if (!(sender is FrameworkElement fe) || !(fe.DataContext is WorkflowExecutionMiner.OperationInfo op)) return;
             // Find the parent workflow (the row whose Operations contain this op).
             var wf = _lastWorkflows?.FirstOrDefault(w => w.Operations.Contains(op));
-            if (wf == null || wf.Ids == null || wf.Ids.Count == 0) return;
+            if (wf == null) return;
 
-            var ids = wf.Ids as IList<long> ?? wf.Ids.ToList();
-            showIdsInGrid(ids);
+            // The op-start entry is one of the workflow's own (engine) entries and is within the range,
+            // so resolve it now and hand it to performSearch to select once the results load.
+            long? opStartId = (wf.Ids != null && wf.Ids.Count > 0)
+                ? repo.FindEntryIdAtOrBeforeInIds(wf.Ids as IList<long> ?? wf.Ids.ToList(), op.Start.Ticks)
+                : null;
 
-            // After filtering to the workflow, park the grid at the operation's start time by selecting
-            // the workflow entry nearest (at/before) the op start — same "nearest event" idea as a
-            // timeline click, scoped to this workflow's entries.
-            long? nearest = repo.FindEntryIdAtOrBeforeInIds(ids, op.Start.Ticks);
-            if (nearest.HasValue) resultsGrid.SelectAndScrollTo(nearest.Value);
+            // Scope to the workflow's full time window across ALL loaded logs (engine + workers), then
+            // jump to the operation start. Uses the same timestamp-range query form as a timeline drag.
+            txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", wf.Start.Ticks, wf.End.Ticks);
+            performSearch(opStartId);
             e.Handled = true;
         }
 
