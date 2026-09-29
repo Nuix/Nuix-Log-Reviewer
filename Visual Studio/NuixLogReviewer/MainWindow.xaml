@@ -630,28 +630,41 @@
                                     <DataGridTextColumn Header="Workflow" Binding="{Binding Name}" Width="260"/>
                                     <DataGridTextColumn Header="Start" Binding="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                     <DataGridTextColumn Header="End" Binding="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
-                                    <DataGridTextColumn Header="Duration" Binding="{Binding DurationText}" Width="90"/>
+                                    <DataGridTextColumn Header="Duration" Binding="{Binding DurationText}" SortMemberPath="Duration" Width="90"/>
                                     <DataGridTextColumn Header="Operations" Binding="{Binding OperationCount}" Width="80"/>
                                 </DataGrid.Columns>
                                 <DataGrid.RowDetailsTemplate>
                                     <DataTemplate>
-                                        <!-- Per-operation breakdown: index/name, span, duration, and any linked worker job. -->
-                                        <ItemsControl ItemsSource="{Binding Operations}" Margin="24,2,4,6">
+                                        <!-- Per-operation breakdown. Columns mirror the parent workflow row's
+                                             order and widths (Name / Start / End / Duration) so the sub-rows
+                                             line up under the workflow headers; the linked-job link trails in
+                                             the remaining space. -->
+                                        <ItemsControl ItemsSource="{Binding Operations}" Margin="0,2,4,6">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <Border x:Name="opRow" Padding="4,2" CornerRadius="2" Background="Transparent"
+                                                    <Border x:Name="opRow" Padding="0,2" CornerRadius="2" Background="Transparent"
                                                             MouseDown="operationRow_MouseDoubleClick"
                                                             ToolTip="Double-click to jump to this operation's start in the grid">
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding Index, StringFormat='{}{0}. '}" Foreground="{StaticResource Brush.TextMuted}"/>
-                                                            <TextBlock Text="{Binding Name}" Width="240" TextTrimming="CharacterEllipsis"/>
-                                                            <TextBlock Text="{Binding DurationText}" Width="90" FontWeight="SemiBold"/>
-                                                            <TextBlock Text="{Binding Start, StringFormat='{}{0:HH:mm:ss}'}" Width="80" Foreground="{StaticResource Brush.TextMuted}"/>
-                                                            <TextBlock Text="{Binding End, StringFormat='→ {0:HH:mm:ss}'}" Width="90" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <!-- widths match the DataGrid columns: Workflow 260, Start 140, End 140, Duration 90 -->
+                                                                <ColumnDefinition Width="260"/>
+                                                                <ColumnDefinition Width="140"/>
+                                                                <ColumnDefinition Width="140"/>
+                                                                <ColumnDefinition Width="90"/>
+                                                                <ColumnDefinition Width="*"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <!-- Name (indented under the Workflow column, prefixed with the op index) -->
+                                                            <TextBlock Grid.Column="0" Margin="20,0,4,0" TextTrimming="CharacterEllipsis">
+                                                                <Run Text="{Binding Index, StringFormat='{}{0}. ', Mode=OneWay}" Foreground="{StaticResource Brush.TextMuted}"/><Run Text="{Binding Name, Mode=OneWay}"/>
+                                                            </TextBlock>
+                                                            <TextBlock Grid.Column="1" Text="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Grid.Column="2" Text="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Grid.Column="3" Text="{Binding DurationText}" FontWeight="SemiBold"/>
                                                             <!-- Clickable link to the worker job this operation waited on (resolved by GUID).
                                                                  Selects + highlights the job without disturbing the current grid view. Hidden
                                                                  for operations that didn't wait on a job (empty WaitedOnJobText). -->
-                                                            <TextBlock VerticalAlignment="Center">
+                                                            <TextBlock Grid.Column="4" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <Setter Property="Visibility" Value="Visible"/>
@@ -666,7 +679,7 @@
                                                                     <Run Text="{Binding WaitedOnJobLinkText, Mode=OneWay}"/>
                                                                 </Hyperlink>
                                                             </TextBlock>
-                                                        </StackPanel>
+                                                        </Grid>
                                                     </Border>
                                                     <DataTemplate.Triggers>
                                                         <Trigger SourceName="opRow" Property="IsMouseOver" Value="True">
@@ -730,7 +743,8 @@
                                    Margin="0,0,4,0" Foreground="{StaticResource Brush.TextMuted}"/>
                     </DockPanel>
                     <ListView x:Name="insightList" Grid.Row="1" MouseDoubleClick="insightList_MouseDoubleClick"
-                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              SizeChanged="insightList_SizeChanged"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
@@ -751,7 +765,15 @@
                             <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
                                 <GridViewColumn Header="Severity" DisplayMemberBinding="{Binding Severity}" Width="80"/>
                                 <GridViewColumn Header="Finding" DisplayMemberBinding="{Binding Title}" Width="300"/>
-                                <GridViewColumn Header="Detail" DisplayMemberBinding="{Binding Detail}" Width="640"/>
+                                <!-- Detail fills the remaining width (set in insightList_SizeChanged, since
+                                     GridViewColumn has no star-sizing) and wraps so nothing is clipped. -->
+                                <GridViewColumn x:Name="insightDetailColumn" Header="Detail" Width="640">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Detail}" TextWrapping="Wrap"/>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
                             </GridView>
                         </ListView.View>
                     </ListView>
@@ -776,8 +798,15 @@
                         <RowDefinition Height="auto"/>
                     </Grid.RowDefinitions>
                     <Border Grid.Row="0" Background="{StaticResource Brush.Brand}" CornerRadius="4,4,0,0">
-                        <Label Content="Please Wait…" FontSize="18" FontWeight="Bold"
-                               Foreground="{StaticResource Brush.TextOnBrand}" Padding="14,8,14,8"/>
+                        <Grid>
+                            <Label Content="Please Wait…" FontSize="18" FontWeight="Bold"
+                                   Foreground="{StaticResource Brush.TextOnBrand}" Padding="14,8,14,8"/>
+                            <!-- Elapsed time so the user can gauge how long an operation is taking. -->
+                            <TextBlock Name="lblElapsed" Text="00:00:00" FontSize="15" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Brush.TextOnBrand}"
+                                       VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,14,0"
+                                       FontFamily="Consolas"/>
+                        </Grid>
                     </Border>
                     <TextBlock Name="lblStatus" Grid.Row="1" FontSize="13" Margin="14,10,14,4" TextWrapping="Wrap"
                                Foreground="{StaticResource Brush.Text}"/>

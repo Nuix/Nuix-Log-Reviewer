@@ -73,13 +73,17 @@ namespace NuixLogReviewer.LogRepository.Insights
         public IReadOnlyList<LogSearchIndex.LogPattern> Patterns { get; }
         /// <summary>Coarse time-series (per-bucket INFO/WARN/ERROR) over the whole window.</summary>
         public LogSearchIndex.TimeSeries Timeline { get; }
+        /// <summary>Automate workflow executions (with their operation breakdown) mined from the engine
+        /// logs across the whole set. Empty when the corpus has no workflow-execution logs.</summary>
+        public IReadOnlyList<WorkflowExecutionMiner.WorkflowInfo> Workflows { get; }
 
         public InsightContext(
             LogSearchIndex.FilteredSetSummary summary,
             IReadOnlyDictionary<string, string> fileDisplayNames,
             IEnumerable<LogSearchIndex.JobInfo> jobs,
             IEnumerable<LogSearchIndex.LogPattern> patterns,
-            LogSearchIndex.TimeSeries timeline)
+            LogSearchIndex.TimeSeries timeline,
+            IEnumerable<WorkflowExecutionMiner.WorkflowInfo> workflows = null)
         {
             summary = summary ?? new LogSearchIndex.FilteredSetSummary();
             Total = summary.Total; Info = summary.Info; Warn = summary.Warn; Error = summary.Error; Debug = summary.Debug;
@@ -103,6 +107,7 @@ namespace NuixLogReviewer.LogRepository.Insights
             Jobs = (jobs ?? Enumerable.Empty<LogSearchIndex.JobInfo>()).ToList();
             Patterns = (patterns ?? Enumerable.Empty<LogSearchIndex.LogPattern>()).ToList();
             Timeline = timeline;
+            Workflows = (workflows ?? Enumerable.Empty<WorkflowExecutionMiner.WorkflowInfo>()).ToList();
         }
 
         /// <summary>
@@ -114,6 +119,24 @@ namespace NuixLogReviewer.LogRepository.Insights
 
         /// <summary>Max cumulative GC "total time" (seconds) observed, or null if unknown.</summary>
         public double? GcMaxTotalSeconds { get; set; }
+
+        /// <summary>
+        /// Nuix "Worker Watchdog" timeouts ("Worker has not progressed within timeout of: N seconds"):
+        /// how many fired and the summed timeout seconds, corpus-wide and per worker job. Each watchdog
+        /// timeout means the worker made no progress for at least N seconds, so the summed seconds is a
+        /// lower-bound estimate of time lost to stalls. Null when no such lines exist. Populated by an
+        /// extra pass in BuildInsights (the timeout value is masked out of the folded pattern template).
+        /// </summary>
+        public WorkerTimeoutStats WorkerTimeouts { get; set; }
+
+        /// <summary>Aggregated worker-watchdog timeout counts/seconds, corpus-total and per job.</summary>
+        public sealed class WorkerTimeoutStats
+        {
+            public int TotalCount;
+            public double TotalSeconds;
+            public List<JobTimeout> ByJob = new List<JobTimeout>();
+            public sealed class JobTimeout { public string JobId; public int Count; public double Seconds; public int WorkerCount; }
+        }
 
         public sealed class FlagStat { public string Name; public int Count; }
         public sealed class FileStat { public string Path; public string DisplayName; public int Count; }

@@ -57,6 +57,11 @@ namespace NuixLogReviewer.GUI
         private static readonly Brush WorkflowOpTick = new SolidColorBrush(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF));       // faint op-boundary tick
         private static readonly Brush WorkflowOpTickSelected = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF));
 
+        // Faint gray for the day-boundary dividers (dashed vertical line + small date label at top). Kept
+        // very light so the multi-day delineation reads as a background guide, not chart data.
+        private static readonly Brush DayDividerBrush = new SolidColorBrush(Color.FromArgb(0x66, 0x55, 0x55, 0x55));
+        private static readonly Brush DayLabelBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x55, 0x55, 0x55));
+
         private bool _dragging;
         private double _dragStartX;
         // When true, bar heights are log-compressed (see redraw): height ~ log(1+total), split across
@@ -114,6 +119,8 @@ namespace NuixLogReviewer.GUI
             WorkflowSelectedStroke.Freeze();
             WorkflowOpTick.Freeze();
             WorkflowOpTickSelected.Freeze();
+            DayDividerBrush.Freeze();
+            DayLabelBrush.Freeze();
         }
 
         public LevelTimeChart()
@@ -349,6 +356,7 @@ namespace NuixLogReviewer.GUI
             }
 
             applyOverlays();
+            drawDayDividers();
             drawWorkflowSpans();
             drawJobSpans();
         }
@@ -375,6 +383,74 @@ namespace NuixLogReviewer.GUI
             // Draw bars beneath all overlay elements (they are added at the bottom of the Z-order).
             chartCanvas.Children.Insert(0, rect);
             return top;
+        }
+
+        /// <summary>
+        /// Draws a faint dashed vertical divider at each local-midnight boundary within the charted span,
+        /// so multi-day logs show where one day ends and the next begins. When there's room, a small date
+        /// label (e.g. "Sep 25") is slipped in at the top just right of the divider. To avoid clutter the
+        /// dividers are only drawn for multi-day spans, and the labels are dropped when the days are packed
+        /// too tightly to read. Elements are plain canvas children, so clearBars() sweeps them on redraw.
+        /// </summary>
+        private void drawDayDividers()
+        {
+            if (_series == null || _series.MinTicks == null || _series.MaxTicks == null) return;
+            double w = chartCanvas.ActualWidth;
+            double h = chartCanvas.ActualHeight;
+            if (w <= 0 || h <= 0) return;
+
+            var min = new DateTime(_series.MinTicks.Value);
+            var max = new DateTime(_series.MaxTicks.Value);
+
+            // First midnight strictly after the start (the start day's own left edge isn't a divider).
+            var firstMidnight = min.Date.AddDays(1);
+            if (firstMidnight >= max) return; // single-day span: nothing to delineate
+
+            // How many day boundaries fall in the span; if there are a great many (very long span on a
+            // narrow chart) we still draw the lines but suppress the labels to avoid a wall of text.
+            int boundaryCount = (int)((max.Date - firstMidnight.Date).TotalDays) + 1;
+            double approxSpacingPx = w / Math.Max(1, boundaryCount);
+            bool showLabels = approxSpacingPx >= 46; // ~ enough room for "Sep 25" without overlap
+
+            for (var day = firstMidnight; day < max; day = day.AddDays(1))
+            {
+                double? xn = ticksToX(day.Ticks);
+                if (xn == null) continue;
+                double x = xn.Value;
+
+                var line = new Line
+                {
+                    X1 = x, X2 = x, Y1 = 0, Y2 = h,
+                    Stroke = DayDividerBrush,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new DoubleCollection { 2, 3 },
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true,
+                };
+                // Above the count bars (inserted at index 0) but below the interactive overlays
+                // (hover/marker/readout carry ZIndex 900/1000), so it reads as a background guide.
+                chartCanvas.Children.Add(line);
+
+                if (showLabels)
+                {
+                    var label = new TextBlock
+                    {
+                        Text = day.ToString("MMM d"),
+                        Foreground = DayLabelBrush,
+                        FontSize = 9,
+                        IsHitTestVisible = false,
+                    };
+                    label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    // Anchor at the BOTTOM edge, just right of the divider — the top edge is occupied by
+                    // the workflow/job overlay bands, so bottom keeps the date clear of them. Flip to the
+                    // left of the line if it would overrun the right edge.
+                    double labelX = x + 3;
+                    if (labelX + label.DesiredSize.Width > w) labelX = x - 3 - label.DesiredSize.Width;
+                    Canvas.SetLeft(label, Math.Max(0, labelX));
+                    Canvas.SetTop(label, Math.Max(0, h - label.DesiredSize.Height - 1));
+                    chartCanvas.Children.Add(label);
+                }
+            }
         }
 
         // ---- Drag-to-select ----

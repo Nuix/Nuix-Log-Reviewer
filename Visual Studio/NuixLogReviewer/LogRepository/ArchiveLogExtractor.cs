@@ -17,9 +17,13 @@ namespace NuixLogReviewer.LogRepository
     /// <list type="bullet">
     /// <item>Password-protected entries are skipped silently (never prompt, never fail the load).</item>
     /// <item>Entry names are matched by BASENAME against the caller's DOS-style globs (same semantics as
-    /// <c>Directory.EnumerateFiles</c>), so inner logs are recognized exactly like loose ones and the
-    /// downstream worker-log/path and format detection keep working.</item>
+    /// <c>Directory.EnumerateFiles</c>), so inner logs are recognized exactly like loose ones. Their
+    /// INNER RELATIVE PATH is then preserved on disk (not flattened), so same-named logs in different
+    /// archive folders stay distinct and the downstream worker-log/path and workflow detection work.</item>
     /// <item>Zip-slip is prevented: the resolved output path must stay within the extraction root.</item>
+    /// <item>Nested archives (an archive whose entries include other archives, e.g. daily
+    /// "engine-server.&lt;date&gt;.log.zip" rollups inside a support bundle) are recursed into, bounded by
+    /// a small depth cap plus the per-entry/total size caps.</item>
     /// <item>Per-entry and total extraction size are capped to bound a decompression bomb.</item>
     /// <item>Everything is best-effort: a broken/partial/unsupported archive is skipped, never throws
     /// out of <see cref="ExtractMatchingLogs"/>.</item>
@@ -38,12 +42,19 @@ namespace NuixLogReviewer.LogRepository
         private const long MaxEntryBytes = 2L * 1024 * 1024 * 1024;
         private const long MaxArchiveBytes = 8L * 1024 * 1024 * 1024;
 
+        /// <summary>
+        /// How deep to recurse into archives-within-archives. Nuix log bundles nest at most one level
+        /// (an outer support zip whose entries include daily "engine-server.&lt;date&gt;.log.zip" rollups),
+        /// so a small cap recovers those while bounding pathological nesting / zip bombs.
+        /// </summary>
+        private const int MaxNestDepth = 4;
+
         /// <summary>An inner log recovered from an archive: where it was extracted + how to label it.</summary>
         public sealed class ExtractedLog
         {
             /// <summary>Absolute path of the extracted temp file (fed to the load pipeline).</summary>
             public string ExtractedPath;
-            /// <summary>Display name, e.g. "logs-2026-09-20.zip!nuix.log", for the grid's file column.</summary>
+            /// <summary>Display name, e.g. "logs-2026-09-20.zip!sub/nuix.log", for the grid's file column.</summary>
             public string DisplayName;
         }
 
@@ -107,7 +118,9 @@ namespace NuixLogReviewer.LogRepository
         /// <summary>
         /// Extracts the matching inner logs from a single archive. Each archive gets its own uniquely
         /// named subfolder under <paramref name="extractRoot"/> so entries from different archives with
-        /// the same inner name (e.g. two "nuix.log") never collide.
+        /// the same inner name (e.g. two "nuix.log") never collide. Inner entries that are THEMSELVES
+        /// archives (e.g. daily "engine-server.&lt;date&gt;.log.zip" rollups inside a support bundle) are
+        /// recursed into, up to <see cref="MaxNestDepth"/> levels, so their logs come in too.
         /// </summary>
         public static IReadOnlyList<ExtractedLog> ExtractMatchingLogs(
             string archivePath,
@@ -115,6 +128,17 @@ namespace NuixLogReviewer.LogRepository
             IReadOnlyList<string> namePatterns,
             ISet<string> excludedNames,
             Action<string> onWarning = null)
+        {
+            return ExtractMatchingLogs(archivePath, extractRoot, namePatterns, excludedNames, onWarning, 0);
+        }
+
+        private static IReadOnlyList<ExtractedLog> ExtractMatchingLogs(
+            string archivePath,
+            string extractRoot,
+            IReadOnlyList<string> namePatterns,
+            ISet<string> excludedNames,
+            Action<string> onWarning,
+            int depth)
         {
             var results = new List<ExtractedLog>();
             if (string.IsNullOrEmpty(archivePath) || !File.Exists(archivePath)) return results;
@@ -133,6 +157,7 @@ namespace NuixLogReviewer.LogRepository
                 ExcludedNames = excludedNames,
                 OnWarning = onWarning,
                 Results = results,
+                Depth = depth,
             };
 
             try
@@ -153,8 +178,6 @@ namespace NuixLogReviewer.LogRepository
 
                         string innerName = InnerFileName(entry.Key, archivePath);
                         if (string.IsNullOrEmpty(innerName)) continue;
-                        if (!MatchesAnyPattern(innerName, namePatterns)) continue;
-                        if (excludedNames != null && excludedNames.Contains(innerName)) continue;
 
                         if (entry.Size > MaxEntryBytes)
                         {
@@ -167,7 +190,28 @@ namespace NuixLogReviewer.LogRepository
                             break;
                         }
 
-                        ExtractCurrentEntry(reader, entry.Key, innerName, ctx);
+                        // A nested archive (e.g. "engine-server.<date>.log.zip") must be RECURSED into,
+                        // not treated as a log — otherwise we'd hand the parser a raw .zip. Check this
+                        // before the log-name match, since our patterns (…log*) also match "…log.zip".
+                        if (IsArchive(innerName))
+                        {
+                            if (depth + 1 > MaxNestDepth)
+                            {
+                                onWarning?.Invoke($"Skipped deeply-nested archive '{innerName}' in '{archiveName}' (max depth {MaxNestDepth}).");
+                                continue;
+                            }
+                            ExtractNestedArchive(reader, entry.Key, innerName, ctx);
+                            continue;
+                        }
+
+                        if (!MatchesAnyPattern(innerName, namePatterns)) continue;
+                        if (excludedNames != null && excludedNames.Contains(innerName)) continue;
+
+                        // Preserve the entry's INNER relative path (not just the basename) so the grid can
+                        // show distinct names for same-named logs in different folders, and so path-based
+                        // detection (worker job id, workflow source file) keeps working.
+                        string innerRelPath = InnerRelativePath(entry.Key, archivePath);
+                        ExtractCurrentEntry(reader, entry.Key, innerRelPath, ctx);
                     }
                 }
             }
@@ -192,24 +236,81 @@ namespace NuixLogReviewer.LogRepository
             public List<ExtractedLog> Results;
             public string DestDir;        // created lazily on first match
             public long ExtractedTotal;
+            public int Depth;             // nesting level (0 = the archive the user/dir load picked)
+        }
+
+        /// <summary>
+        /// Handles an inner entry that is itself an archive: writes it to a temp file under the extract
+        /// root, recurses <see cref="ExtractMatchingLogs"/> on it (depth+1), and merges the results.
+        /// The nested archive's own logs thus come in exactly as if it had been a top-level archive; the
+        /// temp copy stays under the repo's ExtractedArchives folder (swept on startup). Fail-soft.
+        /// </summary>
+        private static void ExtractNestedArchive(SharpCompress.Readers.IReader reader, string entryKey, string innerName, ExtractContext ctx)
+        {
+            // Stage the nested archive under a private temp subfolder (its inner logs are extracted from
+            // there, so its own path never appears as a loaded "log"). Keep the archive's base name so
+            // any warnings are legible.
+            string stageDir = Path.Combine(ctx.ExtractRoot, "_nested", Guid.NewGuid().ToString("N").Substring(0, 8));
+            string stagedArchive;
+            try
+            {
+                Directory.CreateDirectory(stageDir);
+                stagedArchive = Path.Combine(stageDir, SafeFolderName(Path.GetFileName(innerName)));
+                using (var es = reader.OpenEntryStream())
+                using (var fs = new FileStream(stagedArchive, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    es.CopyTo(fs);
+                }
+            }
+            catch (Exception ex)
+            {
+                ctx.OnWarning?.Invoke($"Failed to stage nested archive '{innerName}' from '{ctx.ArchiveName}': {ex.Message}");
+                return;
+            }
+
+            try { ctx.ExtractedTotal += new FileInfo(stagedArchive).Length; } catch { /* advisory */ }
+
+            var nested = ExtractMatchingLogs(
+                stagedArchive, ctx.ExtractRoot, ctx.NamePatterns, ctx.ExcludedNames, ctx.OnWarning, ctx.Depth + 1);
+
+            foreach (var log in nested)
+            {
+                // Qualify the display name so the grid shows the containing rollup, e.g.
+                // "support.zip!engine-server.2026-09-20.log.zip!engine-server.2026-09-20.log".
+                ctx.Results.Add(new ExtractedLog
+                {
+                    ExtractedPath = log.ExtractedPath,
+                    DisplayName = ctx.ArchiveName + "!" + innerName + "!" + StripArchivePrefix(log.DisplayName),
+                });
+            }
+        }
+
+        /// <summary>Drops the leading "&lt;archive&gt;!" segment a nested result carries, so the caller can
+        /// re-qualify it with the OUTER archive context (avoids a doubled inner-archive name).</summary>
+        private static string StripArchivePrefix(string displayName)
+        {
+            if (string.IsNullOrEmpty(displayName)) return displayName;
+            int bang = displayName.IndexOf('!');
+            return bang >= 0 ? displayName.Substring(bang + 1) : displayName;
         }
 
         /// <summary>Writes the reader's current entry to the extraction dir, recording the result.</summary>
-        private static void ExtractCurrentEntry(SharpCompress.Readers.IReader reader, string entryKey, string innerName, ExtractContext ctx)
+        private static void ExtractCurrentEntry(SharpCompress.Readers.IReader reader, string entryKey, string innerRelPath, ExtractContext ctx)
         {
             if (ctx.DestDir == null)
             {
-                // Folder layout: <extractRoot>/<uniqueId>/<archiveName>/<inner>. The uniqueId parent
-                // keeps two same-named archives apart WITHOUT polluting the visible tail, so the grid's
-                // shortest-unique-name shows a clean "<archiveName>/<inner>".
+                // Folder layout: <extractRoot>/<uniqueId>/<archiveName>/<inner relative path>. The
+                // uniqueId parent keeps two same-named archives apart WITHOUT polluting the visible tail,
+                // so the grid's shortest-unique-name shows a clean "<archiveName>/<inner rel path>".
                 string unique = Guid.NewGuid().ToString("N").Substring(0, 8);
                 ctx.DestDir = Path.Combine(ctx.ExtractRoot, unique, SafeFolderName(ctx.ArchiveName));
                 Directory.CreateDirectory(ctx.DestDir);
             }
 
-            // Preserve the inner file NAME (so worker-log/path detection + format globs still work) but
-            // flatten into DestDir; disambiguate collisions with a numeric suffix.
-            string outPath = SafeOutputPath(ctx.DestDir, innerName);
+            // Preserve the inner RELATIVE PATH (folders + name) so same-named logs in different inner
+            // folders stay distinct and worker-job/workflow path detection keeps working. Zip-slip guard
+            // ensures the resolved path stays within DestDir; collisions still get a numeric suffix.
+            string outPath = SafeOutputPath(ctx.DestDir, innerRelPath);
             if (outPath == null)
             {
                 ctx.OnWarning?.Invoke($"Skipped unsafe entry path '{entryKey}' in '{ctx.ArchiveName}'.");
@@ -219,6 +320,8 @@ namespace NuixLogReviewer.LogRepository
 
             try
             {
+                // Create any inner subdirectories the relative path introduces.
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath));
                 using (var es = reader.OpenEntryStream())
                 using (var fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
@@ -227,7 +330,7 @@ namespace NuixLogReviewer.LogRepository
             }
             catch (Exception ex)
             {
-                ctx.OnWarning?.Invoke($"Failed to extract '{innerName}' from '{ctx.ArchiveName}': {ex.Message}");
+                ctx.OnWarning?.Invoke($"Failed to extract '{innerRelPath}' from '{ctx.ArchiveName}': {ex.Message}");
                 return;
             }
 
@@ -236,7 +339,7 @@ namespace NuixLogReviewer.LogRepository
             ctx.Results.Add(new ExtractedLog
             {
                 ExtractedPath = outPath,
-                DisplayName = ctx.ArchiveName + "!" + innerName,
+                DisplayName = ctx.ArchiveName + "!" + innerRelPath,
             });
         }
 
@@ -269,6 +372,38 @@ namespace NuixLogReviewer.LogRepository
             return null;
         }
 
+        /// <summary>
+        /// The inner RELATIVE PATH (folders + file name) to reproduce under the extraction dir, so
+        /// same-named logs in different archive folders stay distinct and path-based detection (worker
+        /// job id, workflow source file) keeps working. Normalizes separators to '/', drops any leading
+        /// slashes and drive/UNC roots, and strips '.'/'..' segments (defence-in-depth against zip-slip;
+        /// <see cref="SafeOutputPath"/> is the hard guard). For single-stream formats with no entry key,
+        /// falls back to the derived <see cref="InnerFileName"/> (a bare name, no folders).
+        /// </summary>
+        internal static string InnerRelativePath(string entryKey, string archivePath)
+        {
+            if (string.IsNullOrEmpty(entryKey))
+            {
+                return InnerFileName(entryKey, archivePath); // single-stream: bare name only
+            }
+
+            string norm = entryKey.Replace('\\', '/');
+            // Drop a leading slash and any Windows drive / UNC prefix an archive might carry.
+            norm = norm.TrimStart('/');
+            int colon = norm.IndexOf(':');
+            if (colon >= 0 && colon < norm.IndexOf('/')) { norm = norm.Substring(colon + 1).TrimStart('/'); }
+
+            var kept = new List<string>();
+            foreach (var seg in norm.Split('/'))
+            {
+                if (seg.Length == 0 || seg == ".") { continue; }
+                if (seg == "..") { if (kept.Count > 0) { kept.RemoveAt(kept.Count - 1); } continue; }
+                kept.Add(seg);
+            }
+            if (kept.Count == 0) { return InnerFileName(entryKey, archivePath); }
+            return string.Join("/", kept);
+        }
+
         /// <summary>Case-insensitive DOS-glob match of a basename against any pattern (EnumerateFiles semantics).</summary>
         internal static bool MatchesAnyPattern(string fileName, IReadOnlyList<string> patterns)
         {
@@ -285,12 +420,19 @@ namespace NuixLogReviewer.LogRepository
         }
 
         /// <summary>
-        /// Resolves the output path for an inner file inside <paramref name="destDir"/>, flattening to the
-        /// entry's basename and rejecting anything that would escape the destination (zip-slip guard).
+        /// Resolves the output path for an inner file inside <paramref name="destDir"/>, preserving the
+        /// entry's RELATIVE PATH (<paramref name="innerRelPath"/> uses '/' separators) and rejecting
+        /// anything that would escape the destination (zip-slip guard — the hard check, complementing the
+        /// segment sanitizing in <see cref="InnerRelativePath"/>).
         /// </summary>
-        internal static string SafeOutputPath(string destDir, string innerName)
+        internal static string SafeOutputPath(string destDir, string innerRelPath)
         {
-            string candidate = Path.Combine(destDir, Path.GetFileName(innerName));
+            // Build the candidate from the sanitized relative segments (never an absolute/rooted path).
+            var segs = (innerRelPath ?? "").Split('/', '\\').Where(s => s.Length > 0 && s != "." && s != "..");
+            string rel = Path.Combine(segs.ToArray());
+            if (string.IsNullOrEmpty(rel)) { return null; }
+
+            string candidate = Path.Combine(destDir, rel);
             string fullDest = Path.GetFullPath(destDir + Path.DirectorySeparatorChar);
             string fullCandidate = Path.GetFullPath(candidate);
             if (!fullCandidate.StartsWith(fullDest, StringComparison.OrdinalIgnoreCase))

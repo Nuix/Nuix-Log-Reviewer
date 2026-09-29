@@ -382,12 +382,31 @@ namespace NuixLogReviewer.LogRepository
             var timeline = SearchIndex.BucketedLevelCounts("", timelineBuckets);
             var fileDisplay = Database.FileDisplayNames();
 
-            var ctx = new Insights.InsightContext(summary, fileDisplay, jobs, patterns, timeline);
+            // Workflow executions across the whole set (blank query), mined the same way GetWorkflows does
+            // (candidate ids -> read entries -> mine). Empty for corpora with no workflow-execution logs.
+            var workflowIds = SearchIndex.WorkflowCandidateIds(this, "");
+            var workflows = (workflowIds != null && workflowIds.Count > 0)
+                ? WorkflowExecutionMiner.Mine(Database.ReadEntries(workflowIds))
+                : new List<WorkflowExecutionMiner.WorkflowInfo>();
+
+            // Attribute EXACT warn/error counts to each operation by counting the lines whose timestamp
+            // falls in the operation's [Start,End] window (whole corpus, so worker-job errors that ran
+            // during the operation are attributed to it). This is precise - unlike a chart-bucket
+            // approximation, which over-attributes and, for sub-bucket ops, hands adjacent operations the
+            // SAME bucket's counts. Consecutive ops don't share a boundary tick, so no double-counting.
+            PopulateOperationSeverityCounts(workflows);
+
+            var ctx = new Insights.InsightContext(summary, fileDisplay, jobs, patterns, timeline, workflows);
 
             // GC-pressure signal: the actual "percentage time" is masked out of pattern templates, so
             // read the GC-monitor entries (folded into GC patterns) and record the peak percentage and
             // max cumulative total-time. Bounded to the GC pattern buckets; skipped if none present.
             PopulateGcStats(ctx, patterns);
+
+            // Worker-watchdog timeouts: the timeout value (N seconds) is masked out of the folded
+            // pattern template, so read the timeout entries and parse + aggregate the seconds (total and
+            // per worker job) for the worker-timeout insight. Skipped if no such lines exist.
+            PopulateWorkerTimeoutStats(ctx, patterns);
 
             var thresholds = new Insights.InsightThresholds();
             var detectors = new List<Insights.IInsightDetector>
@@ -413,6 +432,31 @@ namespace NuixLogReviewer.LogRepository
             // Built-in detectors produce trusted, compiler-built queries, but validate anyway so a bad
             // one degrades gracefully (jump disabled) rather than erroring on click - cheap (parse only).
             return engine.Run(ctx, q => SearchIndex.TryValidateQuery(q));
+        }
+
+        /// <summary>
+        /// Fills each operation's <see cref="WorkflowExecutionMiner.OperationInfo.WarnCount"/> /
+        /// ErrorCount with the EXACT number of WARN/ERROR lines whose timestamp falls in the operation's
+        /// [Start,End] window (whole corpus). One summary pass per operation over a narrow time range;
+        /// operations with no measurable window (e.g. incomplete, End &lt;= Start) are left at 0. This is
+        /// what lets the workflow insight say "this operation is where the errors were" precisely.
+        /// </summary>
+        private void PopulateOperationSeverityCounts(IList<WorkflowExecutionMiner.WorkflowInfo> workflows)
+        {
+            if (workflows == null) return;
+            foreach (var wf in workflows)
+            {
+                if (wf?.Operations == null) continue;
+                foreach (var op in wf.Operations)
+                {
+                    if (op == null || op.End <= op.Start) continue; // no measurable window
+                    string q = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                        "timestamp:[{0} TO {1}]", op.Start.Ticks, op.End.Ticks);
+                    var s = SearchIndex.SummarizeFilteredSet(q);
+                    op.WarnCount = s.Warn;
+                    op.ErrorCount = s.Error;
+                }
+            }
         }
 
         // Matches Nuix GC-monitor lines: "GC PS MarkSweep: collections:N, total time:Xs, percentage time:P%".
@@ -467,6 +511,94 @@ namespace NuixLogReviewer.LogRepository
                 ctx.GcPeakPercent = peakPct;
                 ctx.GcMaxTotalSeconds = maxTotalSec;
             }
+        }
+
+        // Nuix Worker Watchdog line: "Worker has not progressed within timeout of: 600 seconds, current
+        // item: (<id>: <mimetype-path>)". Capture the timeout seconds; the folded pattern masks it as "#".
+        private static readonly System.Text.RegularExpressions.Regex WorkerTimeoutRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"has not progressed within timeout of:\s*([0-9]+(?:\.[0-9]+)?)\s*seconds",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Populates <see cref="Insights.InsightContext.WorkerTimeouts"/> by reading the worker-watchdog
+        /// timeout entries (identified by the patterns that carry the timeout phrase) and parsing each
+        /// "timeout of: N seconds" value. Aggregates the count and summed seconds corpus-wide and per
+        /// worker job (job id from the file path, same key as <see cref="LogSearchIndex.MineJobs"/>).
+        /// No-op if no such lines exist. The timeout value is masked out of the folded template, so like
+        /// the GC pass we go back to the entries for the real numbers.
+        /// </summary>
+        private void PopulateWorkerTimeoutStats(Insights.InsightContext ctx, IList<LogSearchIndex.LogPattern> patterns)
+        {
+            if (ctx == null || patterns == null) return;
+
+            // Collect ids from patterns whose template reads as the worker-timeout line.
+            var ids = new List<long>();
+            foreach (var p in patterns)
+            {
+                if (string.IsNullOrEmpty(p.Template)) continue;
+                if (p.Template.IndexOf("has not progressed within timeout", System.StringComparison.OrdinalIgnoreCase) >= 0
+                    && p.Ids != null)
+                {
+                    ids.AddRange(p.Ids);
+                }
+            }
+            if (ids.Count == 0) return;
+
+            var stats = new Insights.InsightContext.WorkerTimeoutStats();
+            // Per-job accumulation keyed by the "job-<hex>" id (null path/non-worker -> "" bucket).
+            var perJob = new Dictionary<string, Insights.InsightContext.WorkerTimeoutStats.JobTimeout>(
+                System.StringComparer.OrdinalIgnoreCase);
+            // Distinct worker subfolders (e.g. "engine 02b/worker-2") that timed out, per job - so the
+            // insight can express stall time PER WORKER. Workers run in parallel, so summing every
+            // worker's stall and dividing by the job's wall-clock runtime is apples-to-oranges (it can
+            // exceed 100%); dividing the sum by the worker count gives a comparable per-worker figure.
+            var workersByJob = new Dictionary<string, HashSet<string>>(System.StringComparer.OrdinalIgnoreCase);
+
+            foreach (var entry in Database.ReadEntries(ids))
+            {
+                if (entry?.Content == null) continue;
+                var m = WorkerTimeoutRegex.Match(entry.Content);
+                if (!m.Success) continue;
+                if (!double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var secs))
+                {
+                    continue;
+                }
+
+                stats.TotalCount++;
+                stats.TotalSeconds += secs;
+
+                string jobId = JobIdExtractor.Extract(entry.FilePath) ?? "";
+                if (!perJob.TryGetValue(jobId, out var jt))
+                {
+                    jt = new Insights.InsightContext.WorkerTimeoutStats.JobTimeout { JobId = jobId };
+                    perJob[jobId] = jt;
+                }
+                jt.Count++;
+                jt.Seconds += secs;
+
+                // Track which distinct worker produced this timeout (worker/restart subfolder label).
+                string worker = JobIdExtractor.WorkerLabel(entry.FilePath);
+                if (!string.IsNullOrEmpty(worker))
+                {
+                    if (!workersByJob.TryGetValue(jobId, out var set))
+                    {
+                        set = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                        workersByJob[jobId] = set;
+                    }
+                    set.Add(worker);
+                }
+            }
+
+            if (stats.TotalCount == 0) return; // matched patterns but no parseable timeout lines
+
+            foreach (var jt in perJob.Values)
+            {
+                jt.WorkerCount = (workersByJob.TryGetValue(jt.JobId, out var set)) ? set.Count : 0;
+            }
+            stats.ByJob = perJob.Values.OrderByDescending(j => j.Seconds).ToList();
+            ctx.WorkerTimeouts = stats;
         }
 
         public long? FindEntryIdAtOrBefore(string query, long ticks)

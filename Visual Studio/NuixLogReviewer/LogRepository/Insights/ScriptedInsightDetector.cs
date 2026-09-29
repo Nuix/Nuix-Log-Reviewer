@@ -170,8 +170,132 @@ namespace NuixLogReviewer.LogRepository.Insights
                     p.MemberTemplates ?? new[] { p.Template }));
             }));
 
+            // workflows: [{name, startTicks, endTicks, durationMs, incomplete, operationCount, sourceFile,
+            //             query, operations:[{index, total, name, startTicks, endTicks, durationMs,
+            //             incomplete, waitedOnJobId, query}]}]
+            // A workflow/operation `query` scopes to the workflow's full time range (timestamp:[start TO
+            // end]) - the same drill the Jobs/Workflows tab uses - so worker-job context isn't lost.
+            root.FastSetDataProperty("workflows", ToArray(engine, ctx.Workflows, (o, w) =>
+            {
+                string wfQuery = WorkflowTimeRangeQuery(w.Start, w.End);
+                o.FastSetDataProperty("name", w.Name ?? "");
+                o.FastSetDataProperty("startTicks", w.Start.Ticks);
+                o.FastSetDataProperty("endTicks", w.End.Ticks);
+                o.FastSetDataProperty("durationMs", w.Duration.TotalMilliseconds);
+                o.FastSetDataProperty("incomplete", w.Incomplete);
+                o.FastSetDataProperty("operationCount", w.OperationCount);
+                o.FastSetDataProperty("sourceFile", w.SourceFile ?? "");
+                o.FastSetDataProperty("query", wfQuery);
+
+                var ops = new JsArray(engine);
+                if (w.Operations != null)
+                {
+                    foreach (var op in w.Operations)
+                    {
+                        var oo = new JsObject(engine);
+                        oo.FastSetDataProperty("index", op.Index);
+                        oo.FastSetDataProperty("total", op.Total);
+                        oo.FastSetDataProperty("name", op.Name ?? "");
+                        oo.FastSetDataProperty("startTicks", op.Start.Ticks);
+                        oo.FastSetDataProperty("endTicks", op.End.Ticks);
+                        oo.FastSetDataProperty("durationMs", op.Duration.TotalMilliseconds);
+                        oo.FastSetDataProperty("incomplete", op.Incomplete);
+                        oo.FastSetDataProperty("waitedOnJobId", op.WaitedOnJobIdPrefix ?? "");
+                        // Exact warn/error counts within the operation's own [Start,End] window
+                        // (populated by the insights pass). 0 for operations with no measurable window.
+                        oo.FastSetDataProperty("warns", op.WarnCount);
+                        oo.FastSetDataProperty("errors", op.ErrorCount);
+                        // Operations jump into the workflow's range (then a script's positionTicks can
+                        // land the view on the operation's own start).
+                        oo.FastSetDataProperty("query", wfQuery);
+                        oo.PreventExtensions();
+                        ops.Push(oo);
+                    }
+                }
+                o.FastSetDataProperty("operations", ops);
+            }));
+
+            // timeline: { buckets, minTicks, maxTicks, info:[...], warn:[...], error:[...] }
+            // Coarse per-bucket level counts over the whole window (same series the chart/spike detectors
+            // use). Lets a script correlate a time window (e.g. an operation's span) with error/warn
+            // volume. Counts are bucket-approximate; bucket b covers minTicks + b*(span/(buckets-1)).
+            root.FastSetDataProperty("timeline", BuildTimelineView(engine, ctx.Timeline));
+
+            // workerTimeouts: { total, totalSeconds, byJob:[{ jobId, count, seconds, query }] }
+            // Nuix Worker Watchdog timeouts, aggregated corpus-wide and per worker job. Each per-job
+            // `query` isolates that job's timeout lines. Absent (undefined) when there were none.
+            if (ctx.WorkerTimeouts != null)
+            {
+                root.FastSetDataProperty("workerTimeouts", BuildWorkerTimeoutsView(engine, ctx.WorkerTimeouts));
+            }
+
             root.PreventExtensions();
             return root;
+        }
+
+        // The query fragment isolating worker-watchdog timeout lines (content phrase, quoted).
+        private const string WorkerTimeoutContentQuery = "content:\"has not progressed within timeout\"";
+
+        /// <summary>Builds the read-only workerTimeouts object (see BuildContextView for the shape).</summary>
+        private static JsValue BuildWorkerTimeoutsView(Engine engine, InsightContext.WorkerTimeoutStats wt)
+        {
+            var o = new JsObject(engine);
+            o.FastSetDataProperty("total", wt.TotalCount);
+            o.FastSetDataProperty("totalSeconds", wt.TotalSeconds);
+
+            var byJob = new JsArray(engine);
+            if (wt.ByJob != null)
+            {
+                foreach (var j in wt.ByJob)
+                {
+                    var jo = new JsObject(engine);
+                    jo.FastSetDataProperty("jobId", j.JobId ?? "");
+                    jo.FastSetDataProperty("count", j.Count);
+                    jo.FastSetDataProperty("seconds", j.Seconds);
+                    jo.FastSetDataProperty("workerCount", j.WorkerCount);
+                    // Isolate this job's timeout lines: job:<id> AND <timeout phrase>. When the job id is
+                    // unknown (non-worker path), fall back to the corpus-wide timeout query.
+                    jo.FastSetDataProperty("query", string.IsNullOrEmpty(j.JobId)
+                        ? WorkerTimeoutContentQuery
+                        : "job:" + j.JobId + " AND " + WorkerTimeoutContentQuery);
+                    jo.PreventExtensions();
+                    byJob.Push(jo);
+                }
+            }
+            o.FastSetDataProperty("byJob", byJob);
+            o.PreventExtensions();
+            return o;
+        }
+
+        /// <summary>The workflow drill query: everything within the workflow's wall-clock span.</summary>
+        private static string WorkflowTimeRangeQuery(DateTime start, DateTime end)
+        {
+            return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "timestamp:[{0} TO {1}]", start.Ticks, end.Ticks);
+        }
+
+        /// <summary>Builds the read-only timeline object; empty arrays + zero buckets when no series.</summary>
+        private static JsValue BuildTimelineView(Engine engine, LogSearchIndex.TimeSeries ts)
+        {
+            var t = new JsObject(engine);
+            int n = (ts != null && ts.Counts != null) ? ts.Buckets : 0;
+            var info = new JsArray(engine);
+            var warn = new JsArray(engine);
+            var error = new JsArray(engine);
+            for (int b = 0; b < n; b++)
+            {
+                info.Push(ts.Counts[b, 0]);   // level 0 = INFO
+                warn.Push(ts.Counts[b, 1]);   // level 1 = WARN
+                error.Push(ts.Counts[b, 2]);  // level 2 = ERROR
+            }
+            t.FastSetDataProperty("buckets", n);
+            t.FastSetDataProperty("minTicks", (ts != null && ts.MinTicks.HasValue) ? ts.MinTicks.Value : 0);
+            t.FastSetDataProperty("maxTicks", (ts != null && ts.MaxTicks.HasValue) ? ts.MaxTicks.Value : 0);
+            t.FastSetDataProperty("info", info);
+            t.FastSetDataProperty("warn", warn);
+            t.FastSetDataProperty("error", error);
+            t.PreventExtensions();
+            return t;
         }
 
         private static JsArray ToArray<T>(Engine engine, IReadOnlyList<T> items, Action<JsObject, T> fill)

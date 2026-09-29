@@ -119,6 +119,85 @@ namespace NuixLogReviewer.LogRepository
             return LogLineFormats.Detect(sample);
         }
 
+        // Anchor for deriving the calendar date of a TIME-ONLY log: the engine logs print
+        // "... - DateTime UTC: 2026-09-10T17:09:48.881Z" near the top, and that SAME line carries the
+        // local wall-clock time as its leading "HH:mm:ss" stamp. Pairing the two lets us recover the
+        // local calendar date without shifting any displayed time (we keep wall-clock-as-written).
+        private static readonly Regex TimeOnlyLeadingTime =
+            new Regex(@"^(?<h>\d{2}):(?<mi>\d{2}):(?<s>\d{2})[.,](?<ms>\d+)", RegexOptions.Compiled);
+        private static readonly Regex DateTimeUtcAnchor =
+            new Regex(@"DateTime UTC:\s*(?<iso>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)", RegexOptions.Compiled);
+        // Fallback anchor: workflow lifecycle lines end with "... on M/d/yy, h:mmAM/PM" (local date+time).
+        private static readonly Regex WorkflowOnDate =
+            new Regex(@"\bon (?<mo>\d{1,2})/(?<d>\d{1,2})/(?<y>\d{2}),?\s", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Derives the starting CALENDAR DATE for a time-only log (one whose lines carry only HH:mm:ss).
+        /// Strategy, best-first:
+        ///  1) A "DateTime UTC: &lt;iso&gt;Z" line: convert that instant to the machine-local date and, if
+        ///     the same line's leading local time lands on the previous/next day vs. the UTC calendar day,
+        ///     nudge by ±1 so the DATE matches the wall-clock we actually display. (Robust across tz.)
+        ///  2) A workflow "on M/d/yy" line (local date, matches the displayed wall-clock).
+        ///  3) The file's last-write time (archive/extracted copies preserve a plausible date).
+        ///  4) Today, as a last resort (keeps entries in one coherent day rather than year 0001).
+        /// Only the DATE is taken from the anchor; per-line times are shown exactly as written.
+        /// </summary>
+        private DateTime DeriveSeedDate()
+        {
+            string firstLocalTime = null;
+            try
+            {
+                using (var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.SequentialScan))
+                using (var sr = new StreamReader(fs, Encoding.UTF8, true))
+                {
+                    string l;
+                    int scanned = 0;
+                    while (scanned < 200 && (l = sr.ReadLine()) != null)
+                    {
+                        scanned++;
+                        if (l.Length == 0) continue;
+                        if (firstLocalTime == null)
+                        {
+                            var tm = TimeOnlyLeadingTime.Match(l);
+                            if (tm.Success) firstLocalTime = tm.Value;
+                        }
+
+                        var utc = DateTimeUtcAnchor.Match(l);
+                        if (utc.Success &&
+                            DateTime.TryParse(utc.Groups["iso"].Value, CultureInfo.InvariantCulture,
+                                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var inst))
+                        {
+                            var localDate = inst.ToLocalTime().Date;
+                            // Reconcile with the line's own local wall-clock hour to catch a day-boundary
+                            // straddle (e.g. UTC just past midnight while local is still the prior evening).
+                            var lead = TimeOnlyLeadingTime.Match(l);
+                            if (lead.Success && int.TryParse(lead.Groups["h"].Value, out int localHour))
+                            {
+                                int utcHour = inst.Hour;
+                                if (utcHour < 6 && localHour > 18) localDate = localDate.AddDays(-1);
+                                else if (utcHour > 18 && localHour < 6) localDate = localDate.AddDays(1);
+                            }
+                            return localDate;
+                        }
+
+                        var wf = WorkflowOnDate.Match(l);
+                        if (wf.Success &&
+                            int.TryParse(wf.Groups["mo"].Value, out int mo) &&
+                            int.TryParse(wf.Groups["d"].Value, out int dd) &&
+                            int.TryParse(wf.Groups["y"].Value, out int yy))
+                        {
+                            try { return new DateTime(2000 + yy, mo, dd); } catch { /* bad date, keep scanning */ }
+                        }
+                    }
+                }
+            }
+            catch { /* fall through to file time / today */ }
+
+            try { return File.GetLastWriteTime(FilePath).Date; } catch { }
+            return DateTime.Today;
+        }
+
         public IEnumerator<NuixLogEntry> GetEnumerator()
         {
             FileInfo fileInfo = new FileInfo(FilePath);
@@ -131,6 +210,13 @@ namespace NuixLogReviewer.LogRepository
             // producers (Nuix/Automate/Derby vs. Adaptive container logs) never cross-match. The whole
             // file is then parsed with the winning format.
             LogLineFormat format = DetectFileFormat();
+
+            // Time-only formats (Automate engine per-job/init logs) carry no date on their lines; derive
+            // the file's starting calendar date once, then rebase each entry onto it (advancing across
+            // midnight). Non-date-context formats leave these unused.
+            bool needDate = format.RequiresDateContext;
+            DateTime runningDate = needDate ? DeriveSeedDate() : default;
+            TimeSpan lastTimeOfDay = TimeSpan.MinValue;
 
             int streamReaderBufferSize = 1024 * 1024 * 5;
 
@@ -172,15 +258,11 @@ namespace NuixLogReviewer.LogRepository
 
                         lineNumber++;
 
-                        // Since a log entry in the format understood by this code starts with a date, and that date should start with 20xx we
-                        // can use this as a quick way to determine if we even need to do the regex parse of a line.  If the line doesn't start
-                        // with a 20xx value, we can assume it must be content.  If it does start with 20xx then we do the deeper analysis to determine
-                        // whether this is actually a new log entry, parse the fields, etc.  This allows for skipping more costly processing in some
-                        // instaces and it makes the parsing process a bit faster!
-                        // Adaptive container logs also start with a timestamp beginning "20", so this
-                        // coarse gate still applies to every supported format; the detected format's
-                        // regex does the real match.
-                        if (line.StartsWith("20"))
+                        // Header fast-path: only attempt a full regex match on lines that LOOK like a
+                        // new-entry header for this file's format. Dated formats start with the year
+                        // ("20"); the time-only engine-log format starts with "HH:" — each format
+                        // advertises its own cheap predicate so we skip the costly regex on body lines.
+                        if (format.LooksLikeHeaderStart(line))
                         {
                             Match parsed = format.Header.Match(line);
                             if (parsed.Success)
@@ -201,6 +283,20 @@ namespace NuixLogReviewer.LogRepository
                                 // The format knows how to populate timestamp/level/source/channel/elapsed
                                 // from its own capture groups (Nuix tz/elapsed, Adaptive level mapping, ...).
                                 format.Apply(parsed, current);
+
+                                // Time-only formats parse only a time-of-day (on a placeholder date).
+                                // Rebase onto the file's running calendar date, rolling forward a day
+                                // whenever the clock goes backwards (a midnight crossing).
+                                if (needDate)
+                                {
+                                    var tod = current.TimeStamp.TimeOfDay;
+                                    if (lastTimeOfDay != TimeSpan.MinValue && tod < lastTimeOfDay)
+                                    {
+                                        runningDate = runningDate.AddDays(1);
+                                    }
+                                    lastTimeOfDay = tod;
+                                    current.TimeStamp = runningDate.Add(tod);
+                                }
                             }
                             else
                             {

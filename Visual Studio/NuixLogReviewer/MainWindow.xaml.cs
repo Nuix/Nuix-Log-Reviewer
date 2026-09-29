@@ -42,14 +42,62 @@ namespace NuixLogReviewer
             {
                 isBusy = value;
 
-                if (value == true) { busyOverlay.Visibility = Visibility.Visible; }
+                if (value == true)
+                {
+                    StartElapsedTimer();
+                    busyOverlay.Visibility = Visibility.Visible;
+                }
                 else
                 {
+                    StopElapsedTimer();
                     busyOverlay.Visibility = Visibility.Collapsed;
                     // The cancel affordance is per-operation; always hide it when the overlay closes.
                     btnCancelBusy.Visibility = Visibility.Collapsed;
                 }
             }
+        }
+
+        // ===================== Busy-overlay elapsed time =====================
+
+        /// <summary>Stopwatch measuring the current busy operation, surfaced as "hh:mm:ss" in the overlay.</summary>
+        private readonly System.Diagnostics.Stopwatch _busyStopwatch = new System.Diagnostics.Stopwatch();
+        /// <summary>Ticks once a second to refresh the elapsed-time label while busy.</summary>
+        private System.Windows.Threading.DispatcherTimer _busyTimer;
+
+        /// <summary>
+        /// Starts (or restarts) the elapsed-time readout on the busy overlay. Re-entrant: setting IsBusy
+        /// true again while already busy (e.g. one operation flows into another) restarts the clock, so
+        /// the time reflects the current operation rather than accumulating across unrelated ones.
+        /// </summary>
+        private void StartElapsedTimer()
+        {
+            _busyStopwatch.Restart();
+            UpdateElapsedLabel();
+
+            if (_busyTimer == null)
+            {
+                _busyTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(1),
+                };
+                _busyTimer.Tick += (s, e) => UpdateElapsedLabel();
+            }
+            _busyTimer.Start();
+        }
+
+        /// <summary>Stops the elapsed-time readout (leaves the last value on the hidden label).</summary>
+        private void StopElapsedTimer()
+        {
+            _busyTimer?.Stop();
+            _busyStopwatch.Stop();
+        }
+
+        /// <summary>Formats the stopwatch as "hh:mm:ss" onto the overlay label.</summary>
+        private void UpdateElapsedLabel()
+        {
+            if (lblElapsed == null) return;
+            var e = _busyStopwatch.Elapsed;
+            lblElapsed.Text = ((int)e.TotalHours).ToString("D2") + e.ToString(@"\:mm\:ss");
         }
 
         // ===================== Cancellable search =====================
@@ -453,6 +501,11 @@ namespace NuixLogReviewer
             "nuix*.log*",                   // classic Workstation logs (incl. worker nuix.log)
             "automate-scheduler*.log*",     // Automate scheduler
             "automate-engine-server*.log*", // Automate engine server
+            "scheduler.*.log*",             // Automate scheduler daily rollups (scheduler.<date>.log[.zip])
+            "engine-server.log",            // Automate engine server (current, loose)
+            "engine-server.*.log*",         // Automate engine server daily rollups (engine-server.<date>.log[.zip])
+            "rampiva-scheduler*.log*",      // legacy Rampiva-branded scheduler logs (same Nuix format)
+            "rampiva-engine-server*.log*",  // legacy Rampiva-branded engine-server logs (same Nuix format)
             "engine.*-job.*.log*",          // Automate engine per-job logs
             "engine.*-init.log*",           // Automate engine init logs
             "derby-server*.log*",           // Derby network server logs (structured; "HH:mm:ss,fff")
@@ -1280,13 +1333,38 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
-        /// When user double clicks a classifier row, drill the search down to that flag.
+        /// Sizes the Insights "Detail" column to consume the remaining ListView width, since a WPF
+        /// GridViewColumn has no star ("fill") sizing. Detail holds free-text explanations, so it should
+        /// take whatever space the fixed Severity/Finding columns leave; combined with the column's
+        /// wrapping cell template this means long detail is fully readable (wraps) rather than clipped.
+        /// </summary>
+        private void insightList_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (insightDetailColumn == null) return;
+
+            // Width available inside the ListView, minus the two fixed columns and a small allowance for
+            // the vertical scrollbar + item padding/border so the row never overflows into a h-scroll.
+            const double severityWidth = 80;
+            const double findingWidth = 300;
+            double chrome = SystemParameters.VerticalScrollBarWidth + 12;
+
+            double remaining = insightList.ActualWidth - severityWidth - findingWidth - chrome;
+            if (remaining > 120) // keep a sensible floor; ignore transient tiny/0 sizes during layout
+            {
+                insightDetailColumn.Width = remaining;
+            }
+        }
+
+        /// <summary>
+        /// When user double clicks a classifier row, drill the search down to that flag and run it -
+        /// matching the other sections' drill-down behavior (files, patterns, level buttons, insights).
+        /// Navigation history captures the previous view, so Back undoes the drill.
         /// </summary>
         private void flagList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             if (flagList.SelectedItem is LogRepository.FlagCount fc && !string.IsNullOrEmpty(fc.Name))
             {
-                drillDownSearch("flag:" + fc.Name, false);
+                drillDownSearch("flag:" + fc.Name);
             }
         }
 
@@ -2353,12 +2431,25 @@ namespace NuixLogReviewer
             e.Handled = true; // don't bubble to the outer patternList double-click (would re-drill the parent)
         }
 
-        /// <summary>Walks up the visual tree to the nearest ancestor of type T (or null).</summary>
+        /// <summary>Walks up to the nearest ancestor of type T (or null). Safe for CONTENT elements
+        /// (e.g. a Run inside a TextBlock): VisualTreeHelper.GetParent throws for non-visuals, so those
+        /// are traversed via the logical/content parent instead.</summary>
         private static T FindAncestor<T>(DependencyObject from) where T : DependencyObject
         {
             while (from != null && !(from is T))
             {
-                from = System.Windows.Media.VisualTreeHelper.GetParent(from);
+                if (from is Visual || from is System.Windows.Media.Media3D.Visual3D)
+                {
+                    from = System.Windows.Media.VisualTreeHelper.GetParent(from);
+                }
+                else if (from is FrameworkContentElement fce)
+                {
+                    from = fce.Parent ?? LogicalTreeHelper.GetParent(from);
+                }
+                else
+                {
+                    from = LogicalTreeHelper.GetParent(from);
+                }
             }
             return from as T;
         }
@@ -2646,8 +2737,22 @@ namespace NuixLogReviewer
                 {
                     return true;
                 }
-                d = System.Windows.Media.VisualTreeHelper.GetParent(d)
-                    ?? (d is FrameworkElement f ? f.Parent as DependencyObject : null);
+                // A double-click can land on an inline CONTENT element (e.g. a Run inside a TextBlock),
+                // which is NOT a Visual - VisualTreeHelper.GetParent THROWS for those. Only walk the
+                // visual tree for actual visuals; for content elements use the logical/content parent.
+                if (d is Visual || d is System.Windows.Media.Media3D.Visual3D)
+                {
+                    d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+                }
+                else if (d is FrameworkContentElement fce)
+                {
+                    // e.g. Run/Span -> its containing TextBlock (a Visual), continuing the walk upward.
+                    d = fce.Parent ?? LogicalTreeHelper.GetParent(d);
+                }
+                else
+                {
+                    d = LogicalTreeHelper.GetParent(d);
+                }
             }
             return false;
         }

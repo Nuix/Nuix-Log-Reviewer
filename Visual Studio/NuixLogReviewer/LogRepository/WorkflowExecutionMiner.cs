@@ -35,6 +35,26 @@ namespace NuixLogReviewer.LogRepository
         public const string WorkflowSource = "com.nuix.automate.workflow.core.execution.workflow.WorkflowExecution";
         public const string NuixUtilsSource = "com.nuix.automate.workflow.core.utils.nuix.NuixUtils";
 
+        // The logger/source token is emitted either fully-qualified (classic Nuix worker logs:
+        // "com.nuix.automate.workflow.core.execution.workflow.WorkflowExecution") or Logback-abbreviated
+        // (Automate engine per-job logs: "c.n.a.w.c.e.w.WorkflowExecution"). Both forms end with the same
+        // final class name, so match on the class suffix, which is stable across abbreviation.
+        private static bool SourceIs(string source, string fullyQualified)
+        {
+            if (string.IsNullOrEmpty(source)) return false;
+            if (source == fullyQualified) return true;
+            int lastDot = fullyQualified.LastIndexOf('.');
+            string className = lastDot >= 0 ? fullyQualified.Substring(lastDot + 1) : fullyQualified;
+            // Match "...<sep>ClassName" (any abbreviated package prefix) or the bare class name.
+            return source.EndsWith("." + className, StringComparison.Ordinal) || source == className;
+        }
+
+        /// <summary>True if the source is the WorkflowExecution logger (full or abbreviated).</summary>
+        private static bool IsWorkflowSource(string source) => SourceIs(source, WorkflowSource);
+
+        /// <summary>True if the source is the NuixUtils logger (full or abbreviated).</summary>
+        private static bool IsNuixUtilsSource(string source) => SourceIs(source, NuixUtilsSource);
+
         // "Starting execution of workflow <name> on <date>" — capture <name> (non-greedy up to " on ").
         private static readonly Regex StartExec = new Regex(
             @"^Starting execution of workflow (?<name>.+?)(?: on .*)?$", RegexOptions.Compiled);
@@ -65,6 +85,15 @@ namespace NuixLogReviewer.LogRepository
             public DateTime End { get; set; }
             public bool Incomplete { get; set; }      // started but never observed to complete
             public TimeSpan Duration => End - Start;
+
+            /// <summary>
+            /// Exact count of WARN / ERROR log lines whose timestamp falls within this operation's
+            /// [Start, End] window across the whole corpus (so worker-job errors that occurred while the
+            /// operation was running are attributed to it). 0 until populated; set by the insights pass
+            /// (<see cref="NuixLogRepo.BuildInsights"/>), not by the miner, since it needs the index.
+            /// </summary>
+            public int WarnCount { get; set; }
+            public int ErrorCount { get; set; }
 
             /// <summary>
             /// Worker engine-job id this operation waited on, if any (a real link, straight from the
@@ -135,7 +164,7 @@ namespace NuixLogReviewer.LogRepository
 
             // Group by source file so two engine logs never cross-pair their lifecycle lines.
             var byFile = entries
-                .Where(e => e != null && (e.Source == WorkflowSource || e.Source == NuixUtilsSource))
+                .Where(e => e != null && (IsWorkflowSource(e.Source) || IsNuixUtilsSource(e.Source)))
                 .GroupBy(e => e.FilePath ?? "");
 
             foreach (var file in byFile)
@@ -159,7 +188,7 @@ namespace NuixLogReviewer.LogRepository
             {
                 string content = (e.Content ?? "").TrimEnd();
 
-                if (e.Source == NuixUtilsSource)
+                if (IsNuixUtilsSource(e.Source))
                 {
                     // Associate engine-job waits with the operation currently running.
                     var wm = WaitJob.Match(content);

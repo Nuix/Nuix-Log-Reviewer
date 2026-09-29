@@ -20,12 +20,31 @@ namespace NuixLogReviewer.LogRepository
         private readonly Action<Match, NuixLogEntry> _apply;
         private readonly Regex _continuationPrefix;
 
-        public LogLineFormat(string name, Regex header, Action<Match, NuixLogEntry> apply, Regex continuationPrefix = null)
+        /// <summary>
+        /// True when this format's lines carry only a TIME of day (no calendar date), so the reader must
+        /// supply the date from context (see <see cref="NuixLogReader"/> date derivation) and roll it
+        /// forward across midnight. For such formats <see cref="Apply"/> writes only the time-of-day into
+        /// <see cref="NuixLogEntry.TimeStamp"/> (on a placeholder date), which the reader then rebases.
+        /// </summary>
+        public bool RequiresDateContext { get; }
+
+        /// <summary>
+        /// A cheap prefix predicate the reader uses to decide whether a line is even worth a full header
+        /// regex match (the hot path). Dated formats start with the year ("20"); the time-only format
+        /// starts with two digits then ':'. Defaults to the "20" check to preserve existing behavior.
+        /// </summary>
+        public Func<string, bool> LooksLikeHeaderStart { get; }
+
+        public LogLineFormat(string name, Regex header, Action<Match, NuixLogEntry> apply,
+            Regex continuationPrefix = null, bool requiresDateContext = false,
+            Func<string, bool> looksLikeHeaderStart = null)
         {
             Name = name;
             Header = header;
             _apply = apply;
             _continuationPrefix = continuationPrefix;
+            RequiresDateContext = requiresDateContext;
+            LooksLikeHeaderStart = looksLikeHeaderStart ?? (line => line != null && line.StartsWith("20"));
         }
 
         /// <summary>True if the line starts a new entry in this format.</summary>
@@ -120,6 +139,24 @@ namespace NuixLogReviewer.LogRepository
             @"C:(?<ctx>\S+) P:(?<pid>\d+) T:(?<tid>\d+) (?<content>.*)$",
             RegexOptions.Compiled);
 
+        // ---- Nuix / Automate engine per-job & init logs (TIME-ONLY) ----------------------------------
+        // The Automate engine's per-job / init logs (engine.<hex>-job.<hex>.log, engine.<hex>-init.log)
+        // omit the date: every line is "HH:mm:ss.fff [channel] LEVEL source - content". Same structure as
+        // the Nuix format minus the leading date (and no tz/elapsed). The reader supplies the date from
+        // context and handles midnight rollover; Apply here writes only the time-of-day.
+        private static readonly Regex NuixTimeOnlyHeader = new Regex(
+            @"^(?<timestamp>\d{2}:\d{2}:\d{2}[.,]\d+)\s+" +
+            @"\[(?<channel>.+)\]\s+" +
+            @"(?<level>(TRACE|DEBUG|INFO|WARN|ERROR))\s+" +
+            @"(?<source>[^\-]+)\s-\s" +
+            @"(?<content>.*$)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // A line begins a time-only entry when it starts with "HH:" (two digits then a colon). Cheap
+        // gate the reader uses in place of the dated formats' StartsWith("20").
+        private static bool LooksLikeTimeOnlyStart(string line) =>
+            line != null && line.Length >= 3 && char.IsDigit(line[0]) && char.IsDigit(line[1]) && line[2] == ':';
+
         public static readonly LogLineFormat Nuix = new LogLineFormat("Nuix/Automate/Derby", NuixHeader, (m, e) =>
         {
             string ts = m.Groups["timestamp"].Value.Replace(',', '.'); // Derby uses comma millis
@@ -138,6 +175,20 @@ namespace NuixLogReviewer.LogRepository
             e.Level = string.Intern(m.Groups["level"].Value.Trim());
             e.Source = m.Groups["source"].Value.Trim();
         });
+
+        public static readonly LogLineFormat NuixTimeOnly = new LogLineFormat("Nuix/Automate (time-only)", NuixTimeOnlyHeader, (m, e) =>
+        {
+            // Write ONLY the time-of-day onto a placeholder date (0001-01-01); the reader rebases this
+            // onto the file's derived calendar date and advances the day across midnight wraps.
+            string ts = m.Groups["timestamp"].Value.Replace(',', '.');
+            var tod = DateTime.ParseExact(ts, "HH:mm:ss.fff", Culture);
+            e.TimeStamp = new DateTime(1, 1, 1, tod.Hour, tod.Minute, tod.Second, tod.Millisecond);
+
+            e.Channel = m.Groups["channel"].Value.Trim();
+            e.Elapsed = TimeSpan.Zero;
+            e.Level = string.Intern(m.Groups["level"].Value.Trim());
+            e.Source = m.Groups["source"].Value.Trim();
+        }, requiresDateContext: true, looksLikeHeaderStart: LooksLikeTimeOnlyStart);
 
         public static readonly LogLineFormat AdaptiveBracket = new LogLineFormat("Adaptive (.NET)", AdaptiveBracketHeader, (m, e) =>
         {
@@ -161,7 +212,7 @@ namespace NuixLogReviewer.LogRepository
         }, K8sContinuationPrefix);
 
         /// <summary>All formats, in detection-scoring order.</summary>
-        public static readonly IReadOnlyList<LogLineFormat> All = new[] { Nuix, AdaptiveBracket, AdaptiveCpp };
+        public static readonly IReadOnlyList<LogLineFormat> All = new[] { Nuix, NuixTimeOnly, AdaptiveBracket, AdaptiveCpp };
 
         /// <summary>
         /// Picks the format that matches the most of the given sample lines (first N non-blank lines of

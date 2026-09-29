@@ -430,11 +430,17 @@ namespace NuixLogReviewer.LogRepository
         public IList<long> WorkflowCandidateIds(NuixLogRepo repo, string queryString)
         {
             // Source values are indexed with a LowerCaseKeywordAnalyzer (whole value => one lowercased
-            // token), so an exact TermQuery on the lowercased source matches precisely.
+            // token). The logger/source is emitted either fully-qualified ("com.nuix.automate.workflow
+            // .core.execution.workflow.WorkflowExecution", classic worker logs) OR Logback-abbreviated
+            // ("c.n.a.w.c.e.w.WorkflowExecution", Automate engine per-job logs). An exact TermQuery on the
+            // full string misses the abbreviated form, so match on the trailing CLASS name with a wildcard
+            // ("*.workflowexecution" / "*.nuixutils") plus the bare class name — mirroring the in-memory
+            // WorkflowExecutionMiner.SourceIs suffix match. This field is tiny (few distinct sources) and
+            // this query only runs on the Compute button, so the leading wildcard cost is negligible.
             var sourceClause = new BooleanQuery
             {
-                { new TermQuery(new Term("source", WorkflowExecutionMiner.WorkflowSource.ToLowerInvariant())), Occur.SHOULD },
-                { new TermQuery(new Term("source", WorkflowExecutionMiner.NuixUtilsSource.ToLowerInvariant())), Occur.SHOULD },
+                { SourceSuffixQuery(WorkflowExecutionMiner.WorkflowSource), Occur.SHOULD },
+                { SourceSuffixQuery(WorkflowExecutionMiner.NuixUtilsSource), Occur.SHOULD },
             };
 
             Query baseQ;
@@ -453,6 +459,24 @@ namespace NuixLogReviewer.LogRepository
                 { sourceClause, Occur.MUST },
             };
             return SearchIds(query);
+        }
+
+        /// <summary>
+        /// Matches a source token that is the given fully-qualified logger in EITHER its full form or a
+        /// Logback-abbreviated one, by keying on the trailing class name: "*.&lt;class&gt;" (any package
+        /// prefix, full or abbreviated) OR the bare "&lt;class&gt;". Values are lowercased to match the
+        /// LowerCaseKeywordAnalyzer index. Kept in step with WorkflowExecutionMiner.SourceIs.
+        /// </summary>
+        private static Query SourceSuffixQuery(string fullyQualified)
+        {
+            string fq = fullyQualified.ToLowerInvariant();
+            int lastDot = fq.LastIndexOf('.');
+            string className = lastDot >= 0 ? fq.Substring(lastDot + 1) : fq;
+            return new BooleanQuery
+            {
+                { new WildcardQuery(new Term("source", "*." + className)), Occur.SHOULD },
+                { new TermQuery(new Term("source", className)), Occur.SHOULD },
+            };
         }
 
         /// <summary>

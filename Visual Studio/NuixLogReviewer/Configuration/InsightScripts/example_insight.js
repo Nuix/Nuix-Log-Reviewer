@@ -11,6 +11,17 @@
 //   ctx.files    : [{ path, displayName, count, query }]     - per source file
 //   ctx.jobs     : [{ jobId, entryCount, warn, error, durationMs, firstTicks, lastTicks, query }]
 //   ctx.patterns : [{ template, count, info, warn, error, debug, firstTicks, lastTicks, query }]
+//   ctx.workflows: [{ name, startTicks, endTicks, durationMs, incomplete, operationCount, sourceFile,
+//                     query, operations: [{ index, total, name, startTicks, endTicks, durationMs,
+//                                           incomplete, waitedOnJobId, warns, errors, query }] }]
+//                  Automate workflow executions mined from the engine logs (empty when the corpus has
+//                  none). Each operation's warns/errors are exact counts within its own time window.
+//   ctx.timeline : { buckets, minTicks, maxTicks, info:[...], warn:[...], error:[...] }
+//                  per-bucket level counts over the whole window (approximate; matches the chart)
+//   ctx.workerTimeouts : { total, totalSeconds, byJob: [{ jobId, count, seconds, workerCount, query }] }
+//                  Nuix Worker Watchdog timeouts (summed seconds ~ lower-bound stall time across all a
+//                  job's workers; workerCount = distinct workers that timed out), corpus-wide and per
+//                  job. Undefined when the corpus has no watchdog-timeout lines.
 //
 // Each item's `query` is a ready-to-run query string (correctly escaped; patterns are member-expanded).
 // Copy it into a finding's `query` so double-clicking the finding jumps straight to the evidence.
