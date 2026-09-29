@@ -135,15 +135,15 @@ namespace NuixLogReviewer.LogRepository
         /// Single load-wide producer/consumer pipeline shared across ALL files:
         /// <list type="bullet">
         /// <item>A bounded pool of reader+classifier workers reads and classifies files concurrently,
-        /// each writing its entries (in line order) into that file's own ordered queue.</item>
-        /// <item>An ordering coordinator drains those per-file queues strictly in file order into a
-        /// single shared insert queue, so the id assignment order is identical to the old sequential
-        /// loader (file 0's entries, then file 1's, ...).</item>
+        /// streaming their entries straight into ONE shared bounded insert queue.</item>
         /// <item>One shared DB consumer assigns ids and inserts (single SQLite writer), then hands
         /// entries to a shared Lucene indexer pool.</item>
         /// </list>
-        /// This overlaps the CPU-heavy read/classify/index of later files with the DB insertion of
-        /// earlier ones, while preserving every ordering and single-writer invariant of the original.
+        /// Ids are assigned in arrival order (NOT file/load order): nothing reads entries by id - every
+        /// view sorts by (TimeStamp ASC, LineNumber ASC) and id is only a unique key - so no ordering
+        /// coordinator is needed. This bounds total in-flight memory to the shared queue's capacity
+        /// (independent of file count/core count) and removes the head-of-line stall a slow early file
+        /// used to cause. The single-SQLite-writer invariant is preserved.
         /// </summary>
         private void LoadFilesPipeline(string[] files, ProgressBroadcaster pb)
         {
@@ -162,21 +162,22 @@ namespace NuixLogReviewer.LogRepository
 
             long recordCount = 0;
 
-            // One ordered queue per file. Bounded so a very large file can't balloon memory while the
-            // coordinator is still draining an earlier file. Each queue ends with a null sentinel.
-            var perFileQueues = new BlockingCollection<NuixLogEntry>[files.Length];
-            for (int i = 0; i < files.Length; i++)
-            {
-                perFileQueues[i] = new BlockingCollection<NuixLogEntry>(boundedCapacity: 20000);
-            }
-
-            var toInsert = new BlockingCollection<NuixLogEntry>(boundedCapacity: 50000);
-            var toIndex = new BlockingCollection<NuixLogEntry>(boundedCapacity: 50000);
+            // A SINGLE shared bounded queue feeds the DB consumer. Reader workers add classified entries
+            // straight into it (no per-file queues, no strict-order coordinator): id-assignment order no
+            // longer needs to match file/load order because NOTHING reads entries by id - the grid and
+            // every drill sort by (TimeStamp ASC, LineNumber ASC), and id is only a unique key. Dropping
+            // the per-file-queue design removes the head-of-line stall (a slow early file used to pin
+            // every later file's buffered entries) and bounds total in-flight memory to this one queue's
+            // capacity regardless of file count or core count. Intra-file line order is preserved (a file
+            // is read sequentially); only cross-file ties on an identical timestamp become arbitrary,
+            // which is invisible in the (TimeStamp, LineNumber)-sorted views.
+            var toInsert = new BlockingCollection<NuixLogEntry>(boundedCapacity: 16000);
+            var toIndex = new BlockingCollection<NuixLogEntry>(boundedCapacity: 16000);
 
             // ==== Reader+classifier worker pool ====
-            // Workers claim the next unread file index atomically and process it end to end into that
-            // file's queue. Each worker owns its own classifier instances (the classifiers are
-            // stateless per-entry, but per-worker instances keep us safe from any future state).
+            // Workers claim the next unread file index atomically and stream its classified entries into
+            // the shared insert queue. Each worker owns its own classifier instances (stateless per
+            // entry, but per-worker instances keep us safe from any future state).
             int nextFileIndex = -1;
             Task[] readers = new Task[readConcurrency];
             for (int w = 0; w < readConcurrency; w++)
@@ -189,7 +190,7 @@ namespace NuixLogReviewer.LogRepository
                         int fileIndex = System.Threading.Interlocked.Increment(ref nextFileIndex);
                         if (fileIndex >= files.Length) { break; }
 
-                        var queue = perFileQueues[fileIndex];
+                        pb.BroadcastStatus("Loading from " + files[fileIndex]);
                         try
                         {
                             var reader = new NuixLogReader(files[fileIndex]);
@@ -208,39 +209,25 @@ namespace NuixLogReviewer.LogRepository
                                     }
                                 }
                                 entry.Flags = flags;
-                                queue.Add(entry);
+                                toInsert.Add(entry);
                             }
                         }
                         catch (Exception ex)
                         {
                             // "Load what's present": one unreadable/locked/vanished file must not abort
-                            // the load or abandon the other files assigned to this worker. Skip it (its
-                            // queue is still completed in finally) and carry on with the next file.
+                            // the load or abandon the other files. Skip it and carry on.
                             System.Diagnostics.Debug.WriteLine(
                                 $"Skipping unreadable log file '{files[fileIndex]}': {ex.Message}");
-                        }
-                        finally
-                        {
-                            // Always close the queue so the coordinator never blocks forever on a file
-                            // that failed to read.
-                            queue.CompleteAdding();
                         }
                     }
                 }, TaskCreationOptions.LongRunning);
             }
 
-            // ==== Ordering coordinator: drain per-file queues in file order into the shared insert queue ====
-            Task coordinator = Task.Factory.StartNew(() =>
+            // Complete the shared insert queue exactly ONCE, after every reader has finished. Runs on its
+            // own task so the DB consumer below can drain concurrently while the readers are still going.
+            Task readerCompletion = Task.Factory.StartNew(() =>
             {
-                for (int i = 0; i < files.Length; i++)
-                {
-                    pb.BroadcastStatus("Loading from " + files[i]);
-                    foreach (var entry in perFileQueues[i].GetConsumingEnumerable())
-                    {
-                        toInsert.Add(entry);
-                    }
-                    perFileQueues[i].Dispose();
-                }
+                Task.WaitAll(readers);
                 toInsert.CompleteAdding();
             }, TaskCreationOptions.LongRunning);
 
@@ -296,9 +283,9 @@ namespace NuixLogReviewer.LogRepository
                 }, TaskCreationOptions.LongRunning);
             }
 
-            // Wait for the whole pipeline to drain, in dependency order.
-            Task.WaitAll(readers);
-            Task.WaitAll(coordinator, dbConsumer);
+            // Wait for the whole pipeline to drain, in dependency order. readerCompletion waits on all
+            // readers then closes the shared queue, so waiting on it + dbConsumer covers read+insert.
+            Task.WaitAll(readerCompletion, dbConsumer);
             pb.BroadcastStatus("Waiting for indexing to complete...");
             Task.WaitAll(indexers);
 
