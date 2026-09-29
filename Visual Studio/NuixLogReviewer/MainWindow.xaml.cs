@@ -395,36 +395,30 @@ namespace NuixLogReviewer
 
                 // Split the selection into archives and plain files. Any selected archive is inspected
                 // and its matching inner logs are extracted (same as directory load); plain files load
-                // as-is. Extracted copies are content-deduped against the selected plain files.
+                // as-is. Extraction runs on the background thread (see loadLogFiles preparer) so a big or
+                // deeply-nested archive doesn't lock the UI before the busy dialog appears.
                 var selected = ofd.FileNames;
                 var plainFiles = selected.Where(f => !ArchiveLogExtractor.IsArchive(f)).ToArray();
                 var selectedArchives = selected.Where(ArchiveLogExtractor.IsArchive).ToArray();
+                string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
 
-                string[] filesToLoad = plainFiles;
-                if (selectedArchives.Length > 0)
+                loadLogFiles(pb =>
                 {
-                    try
-                    {
-                        string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
-                        var extracted = new List<ArchiveLogExtractor.ExtractedLog>();
-                        foreach (var arc in selectedArchives)
-                        {
-                            extracted.AddRange(ArchiveLogExtractor.ExtractMatchingLogs(
-                                arc, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
-                                warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning))));
-                        }
-                        filesToLoad = LogFileDedup.Combine(
-                            plainFiles, extracted.Select(ex => ex.ExtractedPath).ToList(),
-                            skipped => Dispatcher.BeginInvoke(new Action(() =>
-                                lblStatus.Text = $"Skipped {skipped} archived log(s) already selected as files.")));
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine("Archive inspection failed: " + ex.Message);
-                    }
-                }
+                    if (selectedArchives.Length == 0) { return plainFiles; }
 
-                loadLogFiles(filesToLoad);
+                    pb.BroadcastStatus("Extracting archives…");
+                    var extracted = new List<ArchiveLogExtractor.ExtractedLog>();
+                    foreach (var arc in selectedArchives)
+                    {
+                        extracted.AddRange(ArchiveLogExtractor.ExtractMatchingLogs(
+                            arc, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
+                            warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning))));
+                    }
+                    return LogFileDedup.Combine(
+                        plainFiles, extracted.Select(ex => ex.ExtractedPath).ToList(),
+                        skipped => Dispatcher.BeginInvoke(new Action(() =>
+                            lblStatus.Text = $"Skipped {skipped} archived log(s) already selected as files.")));
+                });
             }
         }
 
@@ -439,47 +433,55 @@ namespace NuixLogReviewer
             if (dialog.ShowDialog() == true)
             {
                 string selectedDirectory = dialog.SelectedPath;
-                string[] looseFiles = FindStructuredLogFiles(selectedDirectory);
 
                 // Dispose of current repo
                 NuixLogRepo prev = repo;
                 repo = new NuixLogRepo();
                 prev.DisposeRepo();
 
-                // Also inspect archives in the directory (Nuix's rolling appender produces zip/gz
-                // rollups for prior days). Matching inner logs are extracted into the new repo's own
-                // folder (so the startup orphan sweep cleans them up) and loaded alongside loose files.
-                // Password-protected archives are skipped. Best-effort: never blocks the load.
-                string[] allFiles = looseFiles;
-                try
-                {
-                    string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
-                    var extracted = ArchiveLogExtractor.ExtractFromDirectory(
-                        selectedDirectory, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
-                        warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning)));
+                string extractRoot = System.IO.Path.Combine(repo.RepoDirectory, "ExtractedArchives");
 
-                    if (extracted.Count > 0)
+                // Directory scan + archive extraction run on the background thread (see loadLogFiles
+                // preparer) so a large tree or many/nested archives don't lock the UI before the busy
+                // dialog appears.
+                loadLogFiles(pb =>
+                {
+                    pb.BroadcastStatus("Scanning directory…");
+                    string[] looseFiles = FindStructuredLogFiles(selectedDirectory);
+
+                    // Also inspect archives in the directory (Nuix's rolling appender produces zip/gz
+                    // rollups for prior days). Matching inner logs are extracted into the new repo's own
+                    // folder (swept by the startup orphan sweep) and loaded alongside loose files.
+                    // Password-protected archives are skipped. Best-effort: never blocks the load.
+                    try
                     {
-                        // Extracted paths end with "<archiveName>/<innerName>", so the grid's
-                        // shortest-unique-tail display naturally shows e.g. "logs-09-20.zip/nuix.log".
-                        //
-                        // Content-dedup: if the customer's directory also contains an already-extracted
-                        // copy of the same logs (loose files identical to the archive's inner logs), drop
-                        // the redundant archive copies so entries aren't loaded twice. Loose files win.
-                        var extractedPaths = extracted.Select(ex => ex.ExtractedPath).ToList();
-                        allFiles = LogFileDedup.Combine(
-                            looseFiles, extractedPaths,
-                            skipped => Dispatcher.BeginInvoke(new Action(() =>
-                                lblStatus.Text = $"Skipped {skipped} archived log(s) already present as extracted files.")));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    // Archive inspection is additive; a failure here must not stop loading loose files.
-                    System.Diagnostics.Debug.WriteLine("Archive inspection failed: " + ex.Message);
-                }
+                        pb.BroadcastStatus("Extracting archives…");
+                        var extracted = ArchiveLogExtractor.ExtractFromDirectory(
+                            selectedDirectory, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
+                            warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning)));
 
-                loadLogFiles(allFiles);
+                        if (extracted.Count > 0)
+                        {
+                            // Extracted paths end with "<archiveName>/<innerName>", so the grid's
+                            // shortest-unique-tail display naturally shows e.g. "logs-09-20.zip/nuix.log".
+                            // Content-dedup: if the directory also contains an already-extracted copy of
+                            // the same logs (loose files identical to the archive's inner logs), drop the
+                            // redundant archive copies so entries aren't loaded twice. Loose files win.
+                            var extractedPaths = extracted.Select(ex => ex.ExtractedPath).ToList();
+                            return LogFileDedup.Combine(
+                                looseFiles, extractedPaths,
+                                skipped => Dispatcher.BeginInvoke(new Action(() =>
+                                    lblStatus.Text = $"Skipped {skipped} archived log(s) already present as extracted files.")));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Archive inspection is additive; a failure here must not stop loading loose files.
+                        System.Diagnostics.Debug.WriteLine("Archive inspection failed: " + ex.Message);
+                    }
+
+                    return looseFiles;
+                });
             }
         }
 
@@ -540,47 +542,80 @@ namespace NuixLogReviewer
         /// <param name="filesToLoad">Array of absolute log file paths.</param>
         private void loadLogFiles(string[] filesToLoad)
         {
-            if (filesToLoad.Length > 0)
+            // Already-resolved file list: no preparation needed.
+            loadLogFiles(_ => filesToLoad);
+        }
+
+        /// <summary>
+        /// Loads logs, running a preparation step (archive extraction, directory scan, dedup) on the
+        /// BACKGROUND thread before parsing. Prep can be heavy for a big/nested archive or a large
+        /// directory - doing it here (not in the click handler) keeps the UI responsive and shows the
+        /// busy dialog immediately, instead of the window briefly locking before the dialog appears.
+        /// </summary>
+        /// <param name="prepareFiles">
+        /// Runs off the UI thread; returns the absolute log paths to load. Receives the ProgressBroadcaster
+        /// so it can report status (e.g. "Extracting archives…"). May report warnings via the dispatcher.
+        /// </param>
+        private void loadLogFiles(Func<ProgressBroadcaster, string[]> prepareFiles)
+        {
+            lblStatus.Text = "Preparing…";
+            lblProgress.Text = "";
+            IsBusy = true;
+            Task loadFilesTask = new Task(() =>
             {
-                lblStatus.Text = "Loading log files...";
-                IsBusy = true;
-                Task loadFilesTask = new Task(() =>
+                ProgressBroadcaster pb = new ProgressBroadcaster();
+                pb.StatusUpdated += (statusMessage) =>
                 {
-                    ProgressBroadcaster pb = new ProgressBroadcaster();
-                    pb.StatusUpdated += (statusMessage) =>
-                    {
-                        Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            lblStatus.Text = statusMessage;
-                        }));
-                    };
-                    pb.ProgressUpdated += (progress) =>
-                    {
-                        Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            lblProgress.Text = progress.ToString("###,###,##0");
-                        }));
-                    };
-
-                    repo.LoadLogFiles(filesToLoad, pb);
-
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        // A new load replaces the corpus: clear all session/view state carried over from
-                        // any previous load in this session (compute-on-demand Patterns/Jobs/Insights
-                        // snapshots, hidden-file/template sets, history) so nothing stale lingers.
-                        resetSessionState();
-
-                        txtSearchQuery.Text = "";
-                        // Seed the session hidden-set from the configured defaults for the flags present
-                        // in this loaded set. Done once per load; the user can then toggle per session.
-                        seedVisibilityDefaults();
-                        // The classifier table fills from performSearch() below (per-filtered-set counts).
-                        performSearch();
+                        lblStatus.Text = statusMessage;
                     }));
-                });
-                loadFilesTask.Start();
-            }
+                };
+                pb.ProgressUpdated += (progress) =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        lblProgress.Text = progress.ToString("###,###,##0");
+                    }));
+                };
+
+                // Resolve the file set (archive extraction / directory scan) on this background thread.
+                string[] filesToLoad;
+                try
+                {
+                    filesToLoad = prepareFiles(pb) ?? Array.Empty<string>();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("Load preparation failed: " + ex.Message);
+                    filesToLoad = Array.Empty<string>();
+                }
+
+                if (filesToLoad.Length == 0)
+                {
+                    Dispatcher.BeginInvoke(new Action(() => { IsBusy = false; }));
+                    return;
+                }
+
+                pb.BroadcastStatus("Loading log files...");
+                repo.LoadLogFiles(filesToLoad, pb);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    // A new load replaces the corpus: clear all session/view state carried over from
+                    // any previous load in this session (compute-on-demand Patterns/Jobs/Insights
+                    // snapshots, hidden-file/template sets, history) so nothing stale lingers.
+                    resetSessionState();
+
+                    txtSearchQuery.Text = "";
+                    // Seed the session hidden-set from the configured defaults for the flags present
+                    // in this loaded set. Done once per load; the user can then toggle per session.
+                    seedVisibilityDefaults();
+                    // The classifier table fills from performSearch() below (per-filtered-set counts).
+                    performSearch();
+                }));
+            });
+            loadFilesTask.Start();
         }
 
         /// <summary>

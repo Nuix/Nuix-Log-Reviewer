@@ -85,6 +85,16 @@ namespace NuixLogReviewer.GUI
 
         public void SetLogEntries(IList<NuixLogEntry> entries)
         {
+            // Drop any selection/current-item BEFORE swapping the source. With a virtualized collection,
+            // if a row was selected (e.g. after an operation drill selected the op-start entry), WPF
+            // tries to preserve currency across the ItemsSource change by locating the old item in the
+            // NEW collection - which, via the default ICollectionView, can walk the list and page every
+            // row in from the DB. On a ~1M+ set that's a multi-second UI-thread hang. Clearing selection
+            // first removes the item WPF would otherwise hunt for, so the swap stays O(1).
+            resultsGrid.SelectedItem = null;
+            resultsGrid.SelectedIndex = -1;
+            if (resultsGrid.SelectedCells.Count > 0) { resultsGrid.UnselectAllCells(); }
+
             CurrentLogEntries = entries;
             resultsGrid.ItemsSource = entries;
             // A new result set invalidates any prior Find matches; the caller re-runs the find if wanted.
@@ -170,6 +180,12 @@ namespace NuixLogReviewer.GUI
             return true;
         }
 
+        // Lazily-built id -> ordinal-index lookup for the CURRENT result set's id list, so repeated
+        // position restores (history Back/Forward, Find next/prev, pivot) don't each linear-scan a huge
+        // list. Keyed on the Ids list reference; rebuilt when the result set (hence the list) changes.
+        private IList<long> _indexLookupSourceIds;
+        private Dictionary<long, int> _indexLookup;
+
         /// <summary>
         /// Finds the ordinal index of the given entry id within the current result set's ordered id
         /// list, or -1 if not present / unavailable. Handles both the real per-query id list and the
@@ -190,11 +206,17 @@ namespace NuixLogReviewer.GUI
                 return (idx >= 0 && idx < ids.Count) ? (int)idx : -1;
             }
 
-            for (int i = 0; i < ids.Count; i++)
+            // For a materialized id list (e.g. the time-sorted blank-query GetAllIds, or a drill's id
+            // set), build an id -> index map ONCE per result set and reuse it. Avoids an O(n) linear
+            // scan on every position restore, which is costly when returning to a ~1M+ set after a drill.
+            if (!ReferenceEquals(_indexLookupSourceIds, ids))
             {
-                if (ids[i] == id) { return i; }
+                var map = new Dictionary<long, int>(ids.Count);
+                for (int i = 0; i < ids.Count; i++) { map[ids[i]] = i; } // first occurrence wins (ids unique)
+                _indexLookup = map;
+                _indexLookupSourceIds = ids;
             }
-            return -1;
+            return _indexLookup.TryGetValue(id, out int found) ? found : -1;
         }
 
         // --- Find within results -------------------------------------------------------------------

@@ -18,7 +18,8 @@
         <DataGrid  Name="resultsGrid" Grid.Row="0" SelectedCellsChanged="resultsGrid_SelectedCellsChanged"
                   LoadingRow="resultsGrid_LoadingRow"
                   AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
-                  CanUserReorderColumns="False" CanUserResizeColumns="True" CanUserResizeRows="False" CanUserSortColumns="False" SelectionMode="Single">
+                  CanUserReorderColumns="False" CanUserResizeColumns="True" CanUserResizeRows="False" CanUserSortColumns="False" SelectionMode="Single"
+                  IsSynchronizedWithCurrentItem="False">
             <DataGrid.Resources>
                 <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="{StaticResource Color.BrandTint}"/>
                 <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="{StaticResource Color.BrandTint}"/>

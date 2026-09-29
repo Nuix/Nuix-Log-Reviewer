@@ -148,13 +148,44 @@ namespace NuixLogReviewer.LogRepository
 
         public List<long> GetAllIds()
         {
+            // Cache the all-entries, time-sorted id list: it's a full-table "SELECT ID ... ORDER BY
+            // TimeStamp" scan over the whole corpus, which is expensive at scale (seconds on ~1M+ rows,
+            // cold) and is re-requested on every blank query (e.g. Clear Search). It only changes when
+            // the loaded set changes, so key the cache on the row count and rebuild when that shifts.
+            // This is what makes "Clear Search" after a narrow drill fast instead of re-sorting the
+            // whole table each time.
+            long count = ExecuteScalar<long>("SELECT COUNT(*) FROM LogEntry");
+            if (_allIdsCache != null && _allIdsCacheCount == count)
+            {
+                return _allIdsCache;
+            }
+
             List<long> result =
             ExecuteReader<long>("SELECT ID FROM LogEntry ORDER BY TimeStamp ASC", (reader) =>
             {
                 return (long)reader["ID"];
             }).ToList();
-            //string debug = "SELECT * FROM LogEntry WHERE ID IN (" + string.Join(",", result) + ")";
+
+            _allIdsCache = result;
+            _allIdsCacheCount = count;
             return result;
+        }
+
+        // Cached result of GetAllIds() (all-entries, time-sorted). Keyed on row count so it's rebuilt
+        // whenever the loaded set changes; invalidated explicitly by InvalidateDerivedCaches().
+        private List<long> _allIdsCache;
+        private long _allIdsCacheCount = -1;
+
+        /// <summary>
+        /// Drops cached derived views (the all-ids list, file display names) so the next access rebuilds
+        /// them. Called after a load changes the entry set. Cheap; the caches lazily repopulate.
+        /// </summary>
+        public void InvalidateDerivedCaches()
+        {
+            _allIdsCache = null;
+            _allIdsCacheCount = -1;
+            _fileDisplayNames = null;
+            _fileDisplayNamesBuiltForCount = -1;
         }
 
         public HashSet<string> GetAllFlags()

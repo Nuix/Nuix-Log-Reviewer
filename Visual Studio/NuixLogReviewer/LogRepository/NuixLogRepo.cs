@@ -129,6 +129,10 @@ namespace NuixLogReviewer.LogRepository
             Database.ExecuteNonQuery("CREATE INDEX IDX_EntryID ON LogEntry (ID);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_TimeStamp ON LogEntry (TimeStamp);");
             Database.ExecuteNonQuery("CREATE INDEX IDX_LineNumber ON LogEntry (LineNumber);");
+
+            // The loaded set changed; drop cached derived views (all-ids list, file display names) so
+            // they rebuild against the new data on next access.
+            Database.InvalidateDerivedCaches();
         }
 
         /// <summary>
