@@ -310,6 +310,17 @@ namespace NuixLogReviewer.GUI
         public delegate void PivotAroundEntryDel(NuixLogEntry entry);
         public event PivotAroundEntryDel PivotAroundEntryRequested;
 
+        /// <summary>The kinds of "filter to this row's …" drills offered by the row context menu.</summary>
+        public enum RowFilterKind { File, Job, Source, Day, Level, Flag }
+
+        /// <summary>
+        /// Raised when the user picks a "Filter to ▸ …" item. <paramref name="arg"/> carries the flag
+        /// name for <see cref="RowFilterKind.Flag"/> (ignored otherwise). MainWindow turns this into a
+        /// history-aware drill query ANDed onto the current view.
+        /// </summary>
+        public delegate void RowFilterDel(RowFilterKind kind, NuixLogEntry entry, string arg);
+        public event RowFilterDel RowFilterRequested;
+
         /// <summary>
         /// Raised as the grid scrolls, reporting the event-time span of the rows currently in view
         /// (ticks). Both null when nothing is visible.
@@ -380,6 +391,95 @@ namespace NuixLogReviewer.GUI
                 return;
             }
             PivotAroundEntryRequested?.Invoke(entry);
+        }
+
+        /// <summary>
+        /// Rebuilds the row context menu for the right-clicked (selected) entry: the static "Pivot" item,
+        /// then a "Filter to ▸" submenu whose items reflect what THIS row can be filtered by (job only for
+        /// worker rows; a per-flag list only when the row is flagged), then a "Copy ▸" submenu. Built
+        /// dynamically so the offered anchors always match the row under the cursor.
+        /// </summary>
+        private void rowContextMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            // Keep the first item (Pivot); rebuild everything after it for the current row.
+            for (int i = rowContextMenu.Items.Count - 1; i >= 1; i--) { rowContextMenu.Items.RemoveAt(i); }
+
+            var entry = SelectedEntry;
+            if (entry == null) { return; }
+
+            rowContextMenu.Items.Add(new Separator());
+
+            var filterTo = new MenuItem { Header = "Filter to" };
+
+            filterTo.Items.Add(MakeFilterItem("This file", RowFilterKind.File, entry, null));
+
+            // Job: only worker-log rows are attributable to a job.
+            string jobId = LogRepository.JobIdExtractor.Extract(entry.FilePath);
+            if (!string.IsNullOrEmpty(jobId))
+            {
+                filterTo.Items.Add(MakeFilterItem("This job (" + jobId + ")", RowFilterKind.Job, entry, null));
+            }
+
+            if (!string.IsNullOrWhiteSpace(entry.Source))
+            {
+                filterTo.Items.Add(MakeFilterItem("This source (" + entry.Source + ")", RowFilterKind.Source, entry, null));
+            }
+
+            filterTo.Items.Add(MakeFilterItem("This day (" + entry.TimeStamp.ToString("yyyy-MM-dd") + ")", RowFilterKind.Day, entry, null));
+
+            if (!string.IsNullOrWhiteSpace(entry.Level))
+            {
+                filterTo.Items.Add(MakeFilterItem("This level (" + entry.Level + ")", RowFilterKind.Level, entry, null));
+            }
+
+            // Flags: one item per classifier flag on the row (submenu when several).
+            var flags = entry.Flags?.Where(f => !string.IsNullOrWhiteSpace(f)).Distinct().ToList();
+            if (flags != null && flags.Count > 0)
+            {
+                if (flags.Count == 1)
+                {
+                    filterTo.Items.Add(MakeFilterItem("This flag (" + flags[0] + ")", RowFilterKind.Flag, entry, flags[0]));
+                }
+                else
+                {
+                    var flagParent = new MenuItem { Header = "This flag" };
+                    foreach (var f in flags)
+                    {
+                        flagParent.Items.Add(MakeFilterItem(f, RowFilterKind.Flag, entry, f));
+                    }
+                    filterTo.Items.Add(flagParent);
+                }
+            }
+
+            rowContextMenu.Items.Add(filterTo);
+
+            // Copy submenu.
+            rowContextMenu.Items.Add(new Separator());
+            var copy = new MenuItem { Header = "Copy" };
+            copy.Items.Add(MakeCopyItem("Timestamp", entry.TimeStamp.ToString("yyyy-MM-dd HH:mm:ss.fff")));
+            if (!string.IsNullOrWhiteSpace(entry.Source)) { copy.Items.Add(MakeCopyItem("Source", entry.Source)); }
+            copy.Items.Add(MakeCopyItem("Content", entry.Content ?? ""));
+            copy.Items.Add(MakeCopyItem("Full line", entry.ToLogLine()));
+            rowContextMenu.Items.Add(copy);
+        }
+
+        /// <summary>Builds a "Filter to" leaf that raises RowFilterRequested for the given kind/arg.</summary>
+        private MenuItem MakeFilterItem(string header, RowFilterKind kind, NuixLogEntry entry, string arg)
+        {
+            var mi = new MenuItem { Header = header };
+            mi.Click += (s, e) => RowFilterRequested?.Invoke(kind, entry, arg);
+            return mi;
+        }
+
+        /// <summary>Builds a "Copy" leaf that puts the given text on the clipboard.</summary>
+        private MenuItem MakeCopyItem(string header, string text)
+        {
+            var mi = new MenuItem { Header = header };
+            mi.Click += (s, e) =>
+            {
+                try { System.Windows.Clipboard.SetText(text ?? ""); } catch { /* clipboard contention; ignore */ }
+            };
+            return mi;
         }
     }
 }

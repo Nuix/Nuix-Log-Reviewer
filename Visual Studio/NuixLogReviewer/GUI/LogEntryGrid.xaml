@@ -26,7 +26,7 @@
                 <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#1B1D21"/>
             </DataGrid.Resources>
             <DataGrid.ContextMenu>
-                <ContextMenu>
+                <ContextMenu x:Name="rowContextMenu" Opened="rowContextMenu_Opened">
                     <MenuItem Header="Pivot Around Event Time..." Name="menuPivotAroundEvent" Click="menuPivotAroundEvent_Click"/>
                 </ContextMenu>
             </DataGrid.ContextMenu>

@@ -207,6 +207,11 @@ namespace NuixLogReviewer
         /// </summary>
         private void updateDateRangeDisplay(DateTime? min, DateTime? max)
         {
+            // Remember the current filtered range so "Expand range" can widen it (fallback when the
+            // query has no explicit timestamp:[..] bounds to widen).
+            _currentRangeMin = min;
+            _currentRangeMax = max;
+
             if (min.HasValue && max.HasValue)
             {
                 TimeSpan span = max.Value - min.Value;
@@ -218,7 +223,12 @@ namespace NuixLogReviewer
             {
                 lblDateRange.Content = "\u2014";
             }
+            if (btnExpandRange != null) { btnExpandRange.IsEnabled = min.HasValue && max.HasValue; }
         }
+
+        // The currently displayed filtered range (min/max event time), retained for "Expand range".
+        private DateTime? _currentRangeMin;
+        private DateTime? _currentRangeMax;
 
         /// <summary>
         /// Clicking the "Range:" value copies the displayed range and span (e.g.
@@ -238,6 +248,67 @@ namespace NuixLogReviewer
             {
                 // Clipboard can transiently fail if another process holds it; ignore.
             }
+        }
+
+        /// <summary>
+        /// "Expand range" button: opens a dialog to widen the current time window by a chosen amount on
+        /// each end, then runs the widened timestamp range. Prefers the current query's own
+        /// timestamp:[a TO b] bounds (so repeated expands are exact and Back steps back in); falls back
+        /// to the displayed filtered range when the query isn't a plain timestamp range.
+        /// </summary>
+        private void btnExpandRange_Click(object sender, RoutedEventArgs e)
+        {
+            // Determine the range to widen: the query's explicit ticks bounds if present, else the
+            // current filtered min/max.
+            DateTime baseMin, baseMax;
+            if (TryGetQueryTimestampRange(txtSearchQuery.Text, out long qMin, out long qMax))
+            {
+                baseMin = new DateTime(qMin);
+                baseMax = new DateTime(qMax);
+            }
+            else if (_currentRangeMin.HasValue && _currentRangeMax.HasValue)
+            {
+                baseMin = _currentRangeMin.Value;
+                baseMax = _currentRangeMax.Value;
+            }
+            else
+            {
+                lblStatus.Text = "No time range to expand yet — run a search first.";
+                return;
+            }
+
+            var dialog = new ExpandRangeDialog(baseMin, baseMax) { Owner = this };
+            dialog.ShowDialog();
+            if (!dialog.Success) { return; }
+
+            TimeSpan amt = dialog.Amount;
+            long newMin = amt.Ticks >= baseMin.Ticks ? DateTime.MinValue.Ticks : baseMin.Ticks - amt.Ticks;
+            long room = DateTime.MaxValue.Ticks - baseMax.Ticks;
+            long newMax = amt.Ticks >= room ? DateTime.MaxValue.Ticks : baseMax.Ticks + amt.Ticks;
+
+            txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", newMin, newMax);
+            performSearch();
+        }
+
+        // Matches a query that is a single timestamp range in ticks, e.g. "timestamp:[638... TO 638...]".
+        // Anchored/trimmed so a compound query (timestamp range AND something else) is NOT treated as a
+        // plain range - in that case we widen the displayed filtered range instead.
+        private static readonly System.Text.RegularExpressions.Regex TimestampRangeQuery =
+            new System.Text.RegularExpressions.Regex(
+                @"^\s*timestamp:\[\s*(?<lo>\d+)\s+TO\s+(?<hi>\d+)\s*\]\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>Extracts the [lo TO hi] ticks bounds when the query is exactly a timestamp range.</summary>
+        private static bool TryGetQueryTimestampRange(string query, out long lo, out long hi)
+        {
+            lo = hi = 0;
+            if (string.IsNullOrWhiteSpace(query)) return false;
+            var m = TimestampRangeQuery.Match(query);
+            if (!m.Success) return false;
+            if (!long.TryParse(m.Groups["lo"].Value, out lo)) return false;
+            if (!long.TryParse(m.Groups["hi"].Value, out hi)) return false;
+            if (hi < lo) { var t = lo; lo = hi; hi = t; }
+            return true;
         }
 
         /// <summary>
@@ -369,6 +440,58 @@ namespace NuixLogReviewer
             // and scroll to the entry we pivoted on so it stays in view within the loaded context.
             txtSearchQuery.Text = string.Format("timestamp:[{0} TO {1}]", startTicks, endTicks);
             performSearch(entry.ID);
+        }
+
+        /// <summary>
+        /// Handles the grid's "Filter to ▸ …" row context-menu choices: builds the appropriate drill
+        /// query for the clicked entry and ANDs it onto the current view via the history-aware
+        /// <see cref="drillDownSearch"/> (so Back undoes it and filters compose). The indexed fields
+        /// (file/job/source/level/flag/timestamp) match exactly what these queries reference.
+        /// </summary>
+        private void resultsGrid_RowFilterRequested(GUI.LogEntryGrid.RowFilterKind kind, NuixLogEntry entry, string arg)
+        {
+            if (entry == null) { return; }
+
+            string criteria = null;
+            switch (kind)
+            {
+                case GUI.LogEntryGrid.RowFilterKind.File:
+                    if (!string.IsNullOrEmpty(entry.FilePath))
+                        criteria = LogRepository.FileDisplay.DrillDownQuery(entry.FilePath);
+                    break;
+
+                case GUI.LogEntryGrid.RowFilterKind.Job:
+                    string jobId = LogRepository.JobIdExtractor.Extract(entry.FilePath);
+                    if (!string.IsNullOrEmpty(jobId)) criteria = "job:" + jobId;
+                    break;
+
+                case GUI.LogEntryGrid.RowFilterKind.Source:
+                    if (!string.IsNullOrWhiteSpace(entry.Source))
+                        criteria = "source:\"" + LogRepository.FileDisplay.EscapePhrase(entry.Source.ToLowerInvariant()) + "\"";
+                    break;
+
+                case GUI.LogEntryGrid.RowFilterKind.Level:
+                    if (!string.IsNullOrWhiteSpace(entry.Level))
+                        criteria = "level:" + entry.Level.Trim().ToLowerInvariant();
+                    break;
+
+                case GUI.LogEntryGrid.RowFilterKind.Flag:
+                    if (!string.IsNullOrWhiteSpace(arg))
+                        criteria = "flag:" + arg.Trim().ToLowerInvariant();
+                    break;
+
+                case GUI.LogEntryGrid.RowFilterKind.Day:
+                    // The whole calendar day containing the entry: [00:00:00, next-day 00:00:00).
+                    DateTime dayStart = entry.TimeStamp.Date;
+                    DateTime dayEnd = dayStart.AddDays(1).AddTicks(-1);
+                    criteria = string.Format("timestamp:[{0} TO {1}]", dayStart.Ticks, dayEnd.Ticks);
+                    break;
+            }
+
+            if (!string.IsNullOrEmpty(criteria))
+            {
+                drillDownSearch(criteria); // ANDs onto the current query; history-aware (Back undoes it)
+            }
         }
 
         /// <summary>
