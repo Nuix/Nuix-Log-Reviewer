@@ -13,6 +13,22 @@ namespace NuixLogReviewer.LogRepository
         public int LineNumber { get; set; }
         public string FilePath { get; set; }
         public string FileName { get; set; }
+
+        /// <summary>
+        /// Human-readable ORIGIN for display when this entry's log was extracted from an archive: the
+        /// real source archive path plus the inner path (e.g. "C:\logs\support.zip \u2192 gateway/nuix.log").
+        /// Null for loose files on disk, in which case the UI falls back to <see cref="FilePath"/>. Set
+        /// when entries are materialized (see LogDatabase.ReadEntries) from the load-time origin map, so
+        /// the grid's File tooltip shows where the data really came from, not the throwaway temp path.
+        /// </summary>
+        public string OriginLabel { get; set; }
+
+        /// <summary>
+        /// The path shown to the user for this entry's source: the archive <see cref="OriginLabel"/> when
+        /// the log came from an archive, otherwise the real on-disk <see cref="FilePath"/>. Bound by the
+        /// grid's File-column tooltip so archived logs show their origin rather than the temp extract path.
+        /// </summary>
+        public string DisplayPath => string.IsNullOrEmpty(OriginLabel) ? FilePath : OriginLabel;
         public DateTime TimeStamp { get; set; }
         public string Channel { get; set; }
         public TimeSpan Elapsed { get; set; }

@@ -37,6 +37,39 @@ namespace NuixLogReviewer.LogRepository
         /// <summary>True if the path is within a worker job folder.</summary>
         public static bool IsWorkerLog(string filePath) => Extract(filePath) != null;
 
+        // The worker-level folder sits DIRECTLY below the "job-<hex>" folder, e.g.
+        // ".../job-<hex>/worker-1/<restart-timestamp>/nuix.log" -> "worker-1". Capture the job folder
+        // plus the single segment immediately after it; the restart-timestamp folder(s) below are the
+        // SAME worker relaunching, not a new worker, so they're excluded from the worker identity.
+        private static readonly Regex WorkerSegmentRegex =
+            new Regex(@"job-[a-f0-9]{32}[\\/]+(?<worker>[^\\/]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Returns a stable per-WORKER identity for a worker-job log path: the "job-&lt;hex&gt;/&lt;worker&gt;"
+        /// pair (lower-cased), where &lt;worker&gt; is the single folder directly beneath the job folder
+        /// (typically "worker-0", "worker-1", ...). Restart/run subfolders below the worker folder are
+        /// deliberately ignored, so a worker that died and relaunched still counts as ONE worker. Returns
+        /// null when the path isn't inside a worker job folder, or when the job folder has no child
+        /// segment (e.g. the job folder directly holds a file). Used to count distinct workers per job.
+        /// </summary>
+        public static string WorkerId(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath)) return null;
+            var m = WorkerSegmentRegex.Match(filePath);
+            if (!m.Success) return null;
+            // Rebuild as "job-<hex>/<worker>" lower-cased so the id is unique across jobs and matches the
+            // lower-cased file_dv values the index stores.
+            string worker = m.Groups["worker"].Value;
+            // Guard against matching the file itself when the job folder directly contains a file with no
+            // worker subfolder (worker would then be the file name). That's not a worker lane; skip it by
+            // requiring the matched segment to be followed by another separator in the original path.
+            int segEnd = m.Index + m.Length;
+            if (segEnd >= filePath.Length) return null; // nothing after the segment => it was the file name
+            char next = filePath[segEnd];
+            if (next != '\\' && next != '/') return null;
+            return m.Value.ToLowerInvariant();
+        }
+
         // The worker (and optional restart) folder(s) that sit BELOW the "job-<hex>" folder, e.g.
         // ".../job-<hex>/engine 01a/worker-1/nuix.log" -> "engine 01a/worker-1". This is the per-worker
         // attribution the job id alone doesn't carry, used to answer "one worker, some, or all?".

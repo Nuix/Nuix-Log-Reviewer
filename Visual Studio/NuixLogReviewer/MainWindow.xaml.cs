@@ -537,6 +537,9 @@ namespace NuixLogReviewer
                             arc, extractRoot, StructuredLogPatterns, ExcludedBlobLogNames,
                             warning => Dispatcher.BeginInvoke(new Action(() => lblStatus.Text = warning))));
                     }
+                    // Remember where each extracted temp file really came from (archive + inner path), so
+                    // the grid's File tooltip shows the origin rather than the throwaway temp path.
+                    registerFileOrigins(extracted);
                     return LogFileDedup.Combine(
                         plainFiles, extracted.Select(ex => ex.ExtractedPath).ToList(),
                         skipped => Dispatcher.BeginInvoke(new Action(() =>
@@ -590,6 +593,7 @@ namespace NuixLogReviewer
                             // Content-dedup: if the directory also contains an already-extracted copy of
                             // the same logs (loose files identical to the archive's inner logs), drop the
                             // redundant archive copies so entries aren't loaded twice. Loose files win.
+                            registerFileOrigins(extracted);
                             var extractedPaths = extracted.Select(ex => ex.ExtractedPath).ToList();
                             return LogFileDedup.Combine(
                                 looseFiles, extractedPaths,
@@ -742,6 +746,27 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
+        /// Records, for the just-extracted archive logs, a map from each extracted TEMP path to its real
+        /// ORIGIN label (source archive + inner path), and hands it to the database so materialized grid
+        /// rows show the origin in the File-column tooltip instead of the throwaway temp extraction path.
+        /// Safe to call on the background preparer thread: it only populates an in-memory dictionary on
+        /// the current repo's Database (which already exists before LoadLogFiles runs). No-op if empty.
+        /// </summary>
+        private void registerFileOrigins(IEnumerable<ArchiveLogExtractor.ExtractedLog> extracted)
+        {
+            if (extracted == null) return;
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ex in extracted)
+            {
+                if (ex != null && !string.IsNullOrEmpty(ex.ExtractedPath) && !string.IsNullOrEmpty(ex.OriginLabel))
+                {
+                    map[ex.ExtractedPath] = ex.OriginLabel;
+                }
+            }
+            if (map.Count > 0) { repo.Database.SetFileOrigins(map); }
+        }
+
+        /// <summary>
         /// Resets per-session, per-corpus UI state when a new log set is loaded into the same session.
         /// The grid/chart/classifier/file tables are refreshed by the performSearch() that follows, so
         /// this focuses on the state that would otherwise linger: the compute-on-demand Patterns/Jobs/
@@ -754,6 +779,9 @@ namespace NuixLogReviewer
             _lastPatterns = null;
             patternList.ItemsSource = null;
             lblPatternsTotal.Text = "";
+            // Clear the quick-filter so the new corpus starts unfiltered (TextChanged resets _patternFilter
+            // and the placeholder hint).
+            if (txtPatternFilter != null) { txtPatternFilter.Text = ""; }
             setPatternsStale(false);
 
             // Jobs snapshot + list.
@@ -950,6 +978,13 @@ namespace NuixLogReviewer
                         {
                             resultsGrid.SelectAndScrollTo(selectEntryId.Value);
                         }
+
+                        // Re-apply any active "Find within results" term to the NEW result set, so the
+                        // match dots (grid) and timeline ticks follow the current filtering automatically
+                        // without the user having to press Enter in the Find box again. No-ops when the
+                        // Find box is empty. Runs after SetLogEntries so the grid's ordered-id list (which
+                        // the find scans) reflects the set just loaded.
+                        refreshFindForNewResults();
 
                         // History: record this destination view (unless we're restoring one). The
                         // position anchor is the pivot target if any, else whatever the grid lands on;
@@ -1530,6 +1565,13 @@ namespace NuixLogReviewer
         private IList<LogSearchIndex.LogPattern> _lastPatterns;
 
         /// <summary>
+        /// Active quick-filter text for the Patterns list (case-insensitive substring over the template).
+        /// Empty => no filter. Applied in <see cref="applyPatternSort"/> so it composes with the sort,
+        /// and purely view-side: it narrows which patterns are LISTED, never which entries are loaded.
+        /// </summary>
+        private string _patternFilter = "";
+
+        /// <summary>
         /// The indexed regex-templates a pattern covers, lower-cased to match the tmpl index key. With
         /// Drain folding a single pattern (whose <see cref="LogSearchIndex.LogPattern.Template"/> may be
         /// a collapsed "&lt;*&gt;" template) represents several regex-templates, so hide/show must apply
@@ -1630,9 +1672,58 @@ namespace NuixLogReviewer
             long entryTotal = 0;
             foreach (var p in _lastPatterns) { entryTotal += p.Count; }
 
+            // When a quick-filter is active, show how many of the total patterns match so the user knows
+            // the list is narrowed (and by how much).
+            if (!string.IsNullOrEmpty(_patternFilter))
+            {
+                int shown = 0;
+                long shownEntries = 0;
+                foreach (var p in _lastPatterns)
+                {
+                    if ((p.Template ?? "").IndexOf(_patternFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        shown++;
+                        shownEntries += p.Count;
+                    }
+                }
+                lblPatternsTotal.Text = string.Format(
+                    "{0:###,###,##0} of {1:###,###,##0} pattern{2} · {3:###,###,##0} entries (filtered)",
+                    shown, patternCount, patternCount == 1 ? "" : "s", shownEntries);
+                return;
+            }
+
             lblPatternsTotal.Text = string.Format(
                 "{0:###,###,##0} pattern{1} · {2:###,###,##0} entries",
                 patternCount, patternCount == 1 ? "" : "s", entryTotal);
+        }
+
+        /// <summary>
+        /// Quick-filter box over the Patterns list: narrows the listed patterns to those whose template
+        /// contains the typed text (case-insensitive). Purely a view filter — it re-binds the grid via
+        /// applyPatternSort and refreshes the count label; it never recomputes patterns or changes which
+        /// log entries are loaded. The placeholder hint is shown only while the box is empty.
+        /// </summary>
+        private void txtPatternFilter_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            _patternFilter = (txtPatternFilter.Text ?? "").Trim();
+            if (lblPatternFilterHint != null)
+            {
+                lblPatternFilterHint.Visibility = string.IsNullOrEmpty(txtPatternFilter.Text)
+                    ? Visibility.Visible : Visibility.Collapsed;
+            }
+            // No-op until patterns have been computed; applyPatternSort guards on _lastPatterns.
+            applyPatternSort();
+            updatePatternsTotal();
+        }
+
+        /// <summary>Esc clears the pattern quick-filter.</summary>
+        private void txtPatternFilter_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                txtPatternFilter.Text = "";
+                e.Handled = true;
+            }
         }
 
         /// <summary>
@@ -1706,47 +1797,56 @@ namespace NuixLogReviewer
         {
             if (_lastPatterns == null) return;
 
+            // Apply the quick-filter first (case-insensitive substring over the template), so the sort
+            // and the bound list reflect only the matching patterns. An empty filter passes everything.
+            IEnumerable<LogSearchIndex.LogPattern> source = _lastPatterns;
+            if (!string.IsNullOrEmpty(_patternFilter))
+            {
+                source = _lastPatterns.Where(p =>
+                    (p.Template ?? "").IndexOf(_patternFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+
             IEnumerable<LogSearchIndex.LogPattern> ordered;
             switch (_patternSortHeader)
             {
                 case "First Seen":
                     ordered = _patternSortAscending
-                        ? _lastPatterns.OrderBy(p => p.FirstSeen)
-                        : _lastPatterns.OrderByDescending(p => p.FirstSeen);
+                        ? source.OrderBy(p => p.FirstSeen)
+                        : source.OrderByDescending(p => p.FirstSeen);
                     break;
                 case "Last Seen":
                     ordered = _patternSortAscending
-                        ? _lastPatterns.OrderBy(p => p.LastSeen)
-                        : _lastPatterns.OrderByDescending(p => p.LastSeen);
+                        ? source.OrderBy(p => p.LastSeen)
+                        : source.OrderByDescending(p => p.LastSeen);
                     break;
                 case "Pattern":
                     ordered = _patternSortAscending
-                        ? _lastPatterns.OrderBy(p => p.Template, StringComparer.OrdinalIgnoreCase)
-                        : _lastPatterns.OrderByDescending(p => p.Template, StringComparer.OrdinalIgnoreCase);
+                        ? source.OrderBy(p => p.Template, StringComparer.OrdinalIgnoreCase)
+                        : source.OrderByDescending(p => p.Template, StringComparer.OrdinalIgnoreCase);
                     break;
                 case "Level":
                     // Sort by dominant-level severity (ERROR>WARN>INFO>DEBUG>none), then by count.
                     ordered = _patternSortAscending
-                        ? _lastPatterns.OrderBy(p => LevelSeverityRank(p.DominantLevel)).ThenBy(p => p.Count)
-                        : _lastPatterns.OrderByDescending(p => LevelSeverityRank(p.DominantLevel)).ThenByDescending(p => p.Count);
+                        ? source.OrderBy(p => LevelSeverityRank(p.DominantLevel)).ThenBy(p => p.Count)
+                        : source.OrderByDescending(p => LevelSeverityRank(p.DominantLevel)).ThenByDescending(p => p.Count);
                     break;
                 case "ERR":
-                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Error) : _lastPatterns.OrderByDescending(p => p.Error);
+                    ordered = _patternSortAscending ? source.OrderBy(p => p.Error) : source.OrderByDescending(p => p.Error);
                     break;
                 case "WARN":
-                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Warn) : _lastPatterns.OrderByDescending(p => p.Warn);
+                    ordered = _patternSortAscending ? source.OrderBy(p => p.Warn) : source.OrderByDescending(p => p.Warn);
                     break;
                 case "INFO":
-                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Info) : _lastPatterns.OrderByDescending(p => p.Info);
+                    ordered = _patternSortAscending ? source.OrderBy(p => p.Info) : source.OrderByDescending(p => p.Info);
                     break;
                 case "DBG":
-                    ordered = _patternSortAscending ? _lastPatterns.OrderBy(p => p.Debug) : _lastPatterns.OrderByDescending(p => p.Debug);
+                    ordered = _patternSortAscending ? source.OrderBy(p => p.Debug) : source.OrderByDescending(p => p.Debug);
                     break;
                 case "Count":
                 default:
                     ordered = _patternSortAscending
-                        ? _lastPatterns.OrderBy(p => p.Count)
-                        : _lastPatterns.OrderByDescending(p => p.Count);
+                        ? source.OrderBy(p => p.Count)
+                        : source.OrderByDescending(p => p.Count);
                     break;
             }
 
@@ -2688,6 +2788,7 @@ namespace NuixLogReviewer
                         _lastWorkflows = workflows;
                         resolveWorkflowJobLinks();
                         applyJobSort();
+                        updateWorkerConcurrencySummary();
                         bindWorkflows();
                         bottomTabs.SelectedItem = tabJobs;
                         updateJobChartOverlay();
@@ -2709,6 +2810,32 @@ namespace NuixLogReviewer
         private void bindWorkflows()
         {
             workflowList.ItemsSource = _lastWorkflows?.OrderBy(w => w.Start).ToList();
+        }
+
+        /// <summary>
+        /// Updates the whole-scope worker-concurrency summary line above the Worker jobs list from the
+        /// last computed jobs (peak/min/avg simultaneous workers across parallel jobs). Hidden when there
+        /// are no worker-based jobs in the current set.
+        /// </summary>
+        private void updateWorkerConcurrencySummary()
+        {
+            if (_lastJobs == null || _lastJobs.Count == 0)
+            {
+                lblWorkerConcurrency.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var stats = LogSearchIndex.ComputeWorkerConcurrency(_lastJobs);
+            if (!stats.HasData)
+            {
+                lblWorkerConcurrency.Visibility = Visibility.Collapsed;
+                return;
+            }
+            lblWorkerConcurrency.Text = stats.SummaryText;
+            lblWorkerConcurrency.ToolTip =
+                "Peak = most workers running at once across jobs that overlapped in time" +
+                (string.IsNullOrEmpty(stats.PeakWindowText) ? "" : " (" + stats.PeakWindowText + ")") +
+                ".\nMin/avg are measured while at least one job was active; avg is time-weighted.";
+            lblWorkerConcurrency.Visibility = Visibility.Visible;
         }
 
         /// <summary>
@@ -2751,6 +2878,9 @@ namespace NuixLogReviewer
                     break;
                 case "Duration":
                     ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.Duration) : _lastJobs.OrderByDescending(j => j.Duration);
+                    break;
+                case "Workers":
+                    ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.WorkerCount) : _lastJobs.OrderByDescending(j => j.WorkerCount);
                     break;
                 case "Entries":
                     ordered = _jobSortAscending ? _lastJobs.OrderBy(j => j.EntryCount) : _lastJobs.OrderByDescending(j => j.EntryCount);
@@ -2950,6 +3080,24 @@ namespace NuixLogReviewer
         }
 
         /// <summary>
+        /// Expander-arrow toggle for a workflow row: shows/hides its per-operation breakdown (the row
+        /// details). Replaces the old auto-expand-on-select behavior, so selecting a workflow (which
+        /// highlights it on the timeline) no longer forces the breakdown open — the user opens it
+        /// explicitly. No-op for a workflow with no operations.
+        /// </summary>
+        private void workflowExpand_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(sender is DependencyObject d)) return;
+            var row = FindAncestor<DataGridRow>(d);
+            if (row == null || !(row.Item is WorkflowExecutionMiner.WorkflowInfo wf)) return;
+            if (wf.OperationCount == 0) return;
+
+            row.DetailsVisibility = row.DetailsVisibility == Visibility.Visible
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+
+        /// <summary>
         /// Clicking an operation's "job &lt;guid&gt;" link selects and highlights the worker job it waited
         /// on — in the Worker jobs list and on the timeline — WITHOUT changing the current grid view, so
         /// you don't lose whatever you're looking at. This is the concrete workflow&#8596;job link,
@@ -2983,8 +3131,61 @@ namespace NuixLogReviewer
             jobList.SelectedItem = job;
             jobList.ScrollIntoView(job);
             levelChart.SetSelectedJob(job.JobId);
+
+            // Make the highlight unmistakable: move keyboard focus to the selected row (so the selection
+            // renders in the ACTIVE brand color, not inactive gray) and give it a brief background flash.
+            // ScrollIntoView + container generation can lag, so do this once the item container exists.
+            jobList.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var container = jobList.ItemContainerGenerator.ContainerFromItem(job) as ListViewItem;
+                if (container != null)
+                {
+                    container.Focus();
+                    FlashJobRow(container);
+                }
+                else
+                {
+                    // Container not realized yet (virtualized/off-screen): scroll again then retry.
+                    jobList.ScrollIntoView(job);
+                    jobList.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        var c2 = jobList.ItemContainerGenerator.ContainerFromItem(job) as ListViewItem;
+                        if (c2 != null) { c2.Focus(); FlashJobRow(c2); }
+                    }), System.Windows.Threading.DispatcherPriority.Background);
+                }
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+
             lblStatus.Text = "Highlighted worker job " + job.JobId + " (linked from operation \u201c" + op.Name + "\u201d).";
             e.Handled = true;
+        }
+
+        /// <summary>
+        /// Briefly pulses a job row's background so a programmatic selection (e.g. from a workflow
+        /// operation link) is impossible to miss. Animates a one-shot tint fade on the container's
+        /// Background; auto-reverts, so it doesn't fight the normal selection brush afterwards.
+        /// </summary>
+        private void FlashJobRow(ListViewItem container)
+        {
+            if (container == null) return;
+            // Pull the brand tint from the theme so the flash color tracks the palette (fallback to the
+            // known tint if the resource is somehow unavailable).
+            Color flash;
+            if (TryFindResource("Color.BrandTint") is Color themed) flash = themed;
+            else flash = (Color)ColorConverter.ConvertFromString("#8BB4FF");
+            var anim = new System.Windows.Media.Animation.ColorAnimation
+            {
+                From = flash,
+                To = Colors.Transparent,
+                Duration = TimeSpan.FromMilliseconds(900),
+                AutoReverse = false,
+                FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop,
+            };
+            // Give the row its own brush instance to animate (don't mutate a shared resource), then let
+            // the animation clear itself so the ListView's selection styling takes back over.
+            var brush = new SolidColorBrush(flash);
+            container.Background = brush;
+            anim.Completed += (s, e2) => container.ClearValue(Control.BackgroundProperty);
+            brush.BeginAnimation(SolidColorBrush.ColorProperty, anim);
         }
 
 
@@ -3263,6 +3464,7 @@ namespace NuixLogReviewer
             _findMatchOrdinals = new List<int>();
             _findCurrentPos = -1;
             resultsGrid.ClearFindMatches();
+            levelChart.SetFindMatches(null);
             lblFindStatus.Text = "";
             btnFindNext.IsEnabled = false;
             btnFindPrev.IsEnabled = false;
@@ -3311,7 +3513,7 @@ namespace NuixLogReviewer
             {
                 // Empty term clears; bad regex leaves the "bad regex" status set by BuildFindPredicate.
                 if (string.IsNullOrEmpty(term)) { clearFind(); }
-                else { resultsGrid.ClearFindMatches(); _findMatchOrdinals = new List<int>(); _findCurrentPos = -1; btnFindNext.IsEnabled = btnFindPrev.IsEnabled = false; }
+                else { resultsGrid.ClearFindMatches(); levelChart.SetFindMatches(null); _findMatchOrdinals = new List<int>(); _findCurrentPos = -1; btnFindNext.IsEnabled = btnFindPrev.IsEnabled = false; }
                 return;
             }
 
@@ -3320,6 +3522,7 @@ namespace NuixLogReviewer
             {
                 lblFindStatus.Text = "0 matches";
                 resultsGrid.ClearFindMatches();
+                levelChart.SetFindMatches(null);
                 _findMatchOrdinals = new List<int>(); _findCurrentPos = -1;
                 btnFindNext.IsEnabled = btnFindPrev.IsEnabled = false;
                 return;
@@ -3339,6 +3542,8 @@ namespace NuixLogReviewer
             Task.Run(() =>
             {
                 var matchIds = new HashSet<long>();
+                // Also collect each match's event-time ticks so the host can plot them on the timeline.
+                var matchTicks = new List<long>();
                 // Map id -> ordinal for this run (ReadEntries doesn't preserve input order).
                 var idToOrdinal = new Dictionary<long, int>(idList.Count);
                 for (int i = 0; i < idList.Count; i++) idToOrdinal[idList[i]] = i;
@@ -3354,6 +3559,7 @@ namespace NuixLogReviewer
                         if (entry?.Content != null && predicate(entry.Content))
                         {
                             matchIds.Add(entry.ID);
+                            matchTicks.Add(entry.TimeStamp.Ticks);
                         }
                     }
                 }
@@ -3365,7 +3571,7 @@ namespace NuixLogReviewer
                     if (idToOrdinal.TryGetValue(id, out int ord)) ordinals.Add(ord);
                 }
                 ordinals.Sort();
-                return (matchIds, ordinals);
+                return (matchIds, ordinals, matchTicks);
             }, token).ContinueWith(t =>
             {
                 if (gen != _findGeneration) return; // superseded by a newer find
@@ -3377,10 +3583,11 @@ namespace NuixLogReviewer
                     return;
                 }
 
-                var (matchIds, ordinals) = t.Result;
+                var (matchIds, ordinals, matchTicks) = t.Result;
                 _findMatchOrdinals = ordinals;
                 _findCurrentPos = -1;
                 resultsGrid.SetFindMatches(matchIds);
+                levelChart.SetFindMatches(matchTicks);
 
                 int count = ordinals.Count;
                 lblFindStatus.Text = count == 1 ? "1 match" : count + " matches";

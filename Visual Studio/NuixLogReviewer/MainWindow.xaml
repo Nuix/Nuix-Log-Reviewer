@@ -421,6 +421,18 @@
                             <ComboBoxItem Content="Exception"/>
                             <ComboBoxItem Content="Sub-template"/>
                         </ComboBox>
+                        <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" Margin="14,0,4,0"
+                                   Foreground="{StaticResource Brush.TextMuted}" Text="Filter:"/>
+                        <Grid DockPanel.Dock="Left" VerticalAlignment="Center" Width="200">
+                            <TextBox x:Name="txtPatternFilter" VerticalContentAlignment="Center"
+                                     TextChanged="txtPatternFilter_TextChanged"
+                                     KeyDown="txtPatternFilter_KeyDown"
+                                     ToolTip="Show only patterns whose template text contains this (case-insensitive). Does not change which entries are loaded — it just narrows the listed patterns. Press Esc to clear."/>
+                            <!-- Placeholder hint; its visibility is toggled in code-behind as the user types. -->
+                            <TextBlock x:Name="lblPatternFilterHint" Text="type to filter patterns…"
+                                       Foreground="{StaticResource Brush.TextMuted}" IsHitTestVisible="False"
+                                       VerticalAlignment="Center" Margin="6,0,0,0"/>
+                        </Grid>
                         <TextBlock x:Name="lblPatternsStale" DockPanel.Dock="Left" VerticalAlignment="Center"
                                    Margin="12,0,0,0" Visibility="Collapsed"
                                    Foreground="{StaticResource Brush.Warn}"
@@ -496,11 +508,14 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="Count" Binding="{Binding Count, StringFormat='{}{0:N0}'}" Width="70" SortMemberPath="Count"/>
-                            <DataGridTemplateColumn Header="Level" Width="60" SortMemberPath="DominantLevel">
+                            <!-- Count, color-coded by the pattern's dominant level (ERROR/WARN/INFO/DEBUG)
+                                 so severity reads at a glance without a separate Level column. The
+                                 ERR/WARN/INFO/DBG columns below still give the full per-level breakdown. -->
+                            <DataGridTemplateColumn Header="Count" Width="70" SortMemberPath="Count">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding DominantLevel}" FontWeight="SemiBold">
+                                        <TextBlock Text="{Binding Count, StringFormat='{}{0:N0}'}" FontWeight="SemiBold"
+                                                   ToolTip="{Binding DominantLevel, StringFormat='Dominant level: {0}'}">
                                             <TextBlock.Style>
                                                 <Style TargetType="TextBlock">
                                                     <Style.Triggers>
@@ -625,7 +640,7 @@
                                        Foreground="{StaticResource Brush.TextMuted}" Margin="2,2,0,2"/>
                             <DataGrid x:Name="workflowList" AutoGenerateColumns="False" IsReadOnly="True"
                                       HeadersVisibility="Column" CanUserAddRows="False" GridLinesVisibility="None"
-                                      RowDetailsVisibilityMode="VisibleWhenSelected"
+                                      RowDetailsVisibilityMode="Collapsed"
                                       MouseDoubleClick="workflowList_MouseDoubleClick"
                                       SelectionChanged="workflowList_SelectionChanged"
                                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
@@ -638,6 +653,20 @@
                                      virtualization, which is fine here - the workflow list is small
                                      (mined executions), unlike the 1.2M-row main log grid. -->
                                 <DataGrid.Columns>
+                                    <!-- Expander arrow: toggles this workflow's per-operation breakdown
+                                         (the row details). Explicit click, so selecting a row no longer
+                                         auto-expands it. Disabled for workflows with no operations. -->
+                                    <DataGridTemplateColumn Header="" Width="26" CanUserSort="False">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ToggleButton Click="workflowExpand_Click" Tag="{Binding}"
+                                                              Focusable="False" BorderThickness="0" Background="Transparent"
+                                                              ToolTip="Show this workflow's per-operation breakdown">
+                                                    <TextBlock Text="&#xE76C;" FontFamily="Segoe MDL2 Assets" FontSize="10"/>
+                                                </ToggleButton>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="Workflow" Binding="{Binding Name}" Width="260"/>
                                     <DataGridTextColumn Header="Start" Binding="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                     <DataGridTextColumn Header="End" Binding="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
@@ -658,7 +687,9 @@
                                                             ToolTip="Double-click to jump to this operation's start in the grid">
                                                         <Grid>
                                                             <Grid.ColumnDefinitions>
-                                                                <!-- widths match the DataGrid columns: Workflow 260, Start 140, End 140, Duration 90 -->
+                                                                <!-- leading 26px spacer aligns under the DataGrid's expander column; the
+                                                                     rest match the DataGrid columns: Workflow 260, Start 140, End 140, Duration 90 -->
+                                                                <ColumnDefinition Width="26"/>
                                                                 <ColumnDefinition Width="260"/>
                                                                 <ColumnDefinition Width="140"/>
                                                                 <ColumnDefinition Width="140"/>
@@ -666,16 +697,16 @@
                                                                 <ColumnDefinition Width="*"/>
                                                             </Grid.ColumnDefinitions>
                                                             <!-- Name (indented under the Workflow column, prefixed with the op index) -->
-                                                            <TextBlock Grid.Column="0" Margin="20,0,4,0" TextTrimming="CharacterEllipsis">
+                                                            <TextBlock Grid.Column="1" Margin="20,0,4,0" TextTrimming="CharacterEllipsis">
                                                                 <Run Text="{Binding Index, StringFormat='{}{0}. ', Mode=OneWay}" Foreground="{StaticResource Brush.TextMuted}"/><Run Text="{Binding Name, Mode=OneWay}"/>
                                                             </TextBlock>
-                                                            <TextBlock Grid.Column="1" Text="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
-                                                            <TextBlock Grid.Column="2" Text="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
-                                                            <TextBlock Grid.Column="3" Text="{Binding DurationText}" FontWeight="SemiBold"/>
+                                                            <TextBlock Grid.Column="2" Text="{Binding Start, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Grid.Column="3" Text="{Binding End, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Foreground="{StaticResource Brush.TextMuted}"/>
+                                                            <TextBlock Grid.Column="4" Text="{Binding DurationText}" FontWeight="SemiBold"/>
                                                             <!-- Clickable link to the worker job this operation waited on (resolved by GUID).
                                                                  Selects + highlights the job without disturbing the current grid view. Hidden
                                                                  for operations that didn't wait on a job (empty WaitedOnJobText). -->
-                                                            <TextBlock Grid.Column="4" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                                            <TextBlock Grid.Column="5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
                                                                 <TextBlock.Style>
                                                                     <Style TargetType="TextBlock">
                                                                         <Setter Property="Visibility" Value="Visible"/>
@@ -713,6 +744,10 @@
                         <DockPanel Grid.Row="2" LastChildFill="True">
                             <TextBlock DockPanel.Dock="Top" Text="Worker jobs" FontWeight="SemiBold"
                                        Foreground="{StaticResource Brush.TextMuted}" Margin="2,2,0,2"/>
+                            <TextBlock x:Name="lblWorkerConcurrency" DockPanel.Dock="Top"
+                                       Foreground="{StaticResource Brush.TextMuted}" Margin="2,0,0,4"
+                                       TextWrapping="Wrap" Visibility="Collapsed"
+                                       ToolTip="Peak = most workers running at once across jobs that overlapped in time; min/avg are measured while at least one job was active."/>
                             <ListView x:Name="jobList" MouseDoubleClick="jobList_MouseDoubleClick"
                                       GridViewColumnHeader.Click="jobList_ColumnHeaderClick"
                                       SelectionChanged="jobList_SelectionChanged"
@@ -724,12 +759,23 @@
                                         <Setter Property="ToolTip" Value="{Binding JobId}"/>
                                     </Style>
                                 </ListView.ItemContainerStyle>
+                                <ListView.Resources>
+                                    <!-- Keep the selected row vivid in the brand color even when the list
+                                         is NOT focused. A job is often selected programmatically from the
+                                         workflow operation link (focus stays on the workflow list), and the
+                                         default inactive-selection gray was too faint to notice. -->
+                                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="{StaticResource Color.Brand}"/>
+                                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White"/>
+                                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="{StaticResource Color.Brand}"/>
+                                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="White"/>
+                                </ListView.Resources>
                                 <ListView.View>
                                     <GridView ColumnHeaderContainerStyle="{StaticResource SortableHeaderStyle}">
                                         <GridViewColumn Header="Job" DisplayMemberBinding="{Binding JobId}" Width="290"/>
                                         <GridViewColumn Header="Start" DisplayMemberBinding="{Binding FirstSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                         <GridViewColumn Header="End" DisplayMemberBinding="{Binding LastSeen, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="140"/>
                                         <GridViewColumn Header="Duration" DisplayMemberBinding="{Binding DurationText}" Width="90"/>
+                                        <GridViewColumn Header="Workers" DisplayMemberBinding="{Binding WorkerCount, StringFormat='{}{0:N0}'}" Width="65"/>
                                         <GridViewColumn Header="Entries" DisplayMemberBinding="{Binding EntryCount, StringFormat='{}{0:N0}'}" Width="70"/>
                                         <GridViewColumn Header="Warns" DisplayMemberBinding="{Binding WarnCount, StringFormat='{}{0:N0}'}" Width="60"/>
                                         <GridViewColumn Header="Errors" DisplayMemberBinding="{Binding ErrorCount, StringFormat='{}{0:N0}'}" Width="60"/>

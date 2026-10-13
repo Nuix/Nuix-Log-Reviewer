@@ -91,6 +91,14 @@ namespace NuixLogReviewer.LogRepository
         private const int FormatSampleLines = 20;
 
         /// <summary>
+        /// Minimum backwards jump in time-of-day that counts as a real midnight crossing for a time-only
+        /// log. A genuine midnight goes from ~23:59:59 to ~00:00:00 (a ~24h drop); thread-interleave
+        /// jitter only nudges the clock back by milliseconds/seconds. 12h cleanly separates the two:
+        /// no burst of out-of-order flushing spans half a day, and any real date rollover is a ~24h drop.
+        /// </summary>
+        private static readonly TimeSpan MidnightRollbackThreshold = TimeSpan.FromHours(12);
+
+        /// <summary>
         /// Detects this file's line format by sampling its first <see cref="FormatSampleLines"/> non-blank
         /// lines and choosing whichever known format matches the most of them (see
         /// <see cref="LogLineFormats.Detect"/>). A cheap separate read of only the sample; falls back to
@@ -286,14 +294,30 @@ namespace NuixLogReviewer.LogRepository
 
                                 // Time-only formats parse only a time-of-day (on a placeholder date).
                                 // Rebase onto the file's running calendar date, rolling forward a day
-                                // whenever the clock goes backwards (a midnight crossing).
+                                // ONLY on a genuine midnight crossing.
+                                //
+                                // A naive "any backwards step => new day" is wrong here: engine logs
+                                // interleave many threads/channels, so a line can be flushed with a
+                                // time-of-day a few ms EARLIER than the line before it (observed: a 3ms
+                                // dip mid-file). Treating that jitter as midnight would advance the date
+                                // by a full day for the entire rest of the file, inflating every later
+                                // operation/workflow duration by ~1 day (the "1d 0h" artifact). A real
+                                // midnight goes from ~23:59:59 to ~00:00:00 — a drop of nearly 24h — so
+                                // only roll when the clock falls back by more than MidnightRollbackThreshold.
                                 if (needDate)
                                 {
                                     var tod = current.TimeStamp.TimeOfDay;
-                                    if (lastTimeOfDay != TimeSpan.MinValue && tod < lastTimeOfDay)
+                                    if (lastTimeOfDay != TimeSpan.MinValue &&
+                                        (lastTimeOfDay - tod) > MidnightRollbackThreshold)
                                     {
                                         runningDate = runningDate.AddDays(1);
                                     }
+                                    // Compare each line against the IMMEDIATELY preceding line's
+                                    // time-of-day: a real midnight is a single ~24h drop between adjacent
+                                    // lines, while interleave jitter is a sub-second dip that stays well
+                                    // under the threshold and so is ignored. (A high-water reference would
+                                    // mis-fire a second roll right after a crossing, since the first
+                                    // post-midnight lines sit far below the pre-midnight peak.)
                                     lastTimeOfDay = tod;
                                     current.TimeStamp = runningDate.Add(tod);
                                 }

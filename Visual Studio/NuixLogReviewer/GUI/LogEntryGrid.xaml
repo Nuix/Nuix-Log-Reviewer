@@ -46,12 +46,13 @@
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <!-- File shows the shortest-unique path tail (matching the Files tab); the full path is
-                     the tooltip. -->
+                <!-- File shows the shortest-unique path tail (matching the Files tab); the tooltip shows
+                     the full origin — the real archive path + inner path for extracted logs, else the
+                     on-disk full path. -->
                 <DataGridTextColumn Header="File" Binding="{Binding FileName}" FontFamily="Consolas">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock">
-                            <Setter Property="ToolTip" Value="{Binding FilePath}"/>
+                            <Setter Property="ToolTip" Value="{Binding DisplayPath}"/>
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>

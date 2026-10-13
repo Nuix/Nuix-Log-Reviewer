@@ -21,6 +21,30 @@ namespace NuixLogReviewer.LogRepository
         private Dictionary<string, string> _fileDisplayNames;
         private int _fileDisplayNamesBuiltForCount = -1;
 
+        // Extracted-temp-path => human ORIGIN label (real archive path + inner path), set at load time
+        // from ArchiveLogExtractor results. Lets the grid show where an archived entry really came from
+        // instead of the throwaway temp extraction path. Case-insensitive keys (Windows paths). Empty/
+        // null for loose files, which keep showing their on-disk path.
+        private Dictionary<string, string> _fileOrigins =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Registers (or merges) a map of extracted-temp-path =&gt; origin label so materialized entries
+        /// can display their real archive origin. Called by the load pipeline after archive extraction.
+        /// Keys are matched case-insensitively against the stored file path. A null/empty map is ignored.
+        /// </summary>
+        public void SetFileOrigins(IReadOnlyDictionary<string, string> origins)
+        {
+            if (origins == null) return;
+            foreach (var kv in origins)
+            {
+                if (!string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value))
+                {
+                    _fileOrigins[kv.Key] = kv.Value;
+                }
+            }
+        }
+
         /// <summary>
         /// Returns (building if needed) the full-path =&gt; short-unique-tail display map across all
         /// distinct loaded file paths (read from the FileName lookup table, the source of truth). Uses
@@ -280,6 +304,9 @@ namespace NuixLogReviewer.LogRepository
                     FileName = display.TryGetValue(filePath, out var shortName)
                         ? shortName
                         : Path.GetFileName(filePath),
+                    // Origin label (archive + inner path) when this log came from an archive, so the grid
+                    // tooltip shows the real source rather than the temp extract path; null for loose files.
+                    OriginLabel = _fileOrigins.TryGetValue(filePath, out var origin) ? origin : null,
                     TimeStamp = DateTime.FromFileTime((long)reader["TimeStamp"]),
                     Channel = reader["Channel"].ToString(),
                     Elapsed = TimeSpan.FromMilliseconds((long)reader["Elapsed"]),

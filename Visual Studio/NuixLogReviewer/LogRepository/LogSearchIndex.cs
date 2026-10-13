@@ -1056,6 +1056,14 @@ namespace NuixLogReviewer.LogRepository
             public int EntryCount { get; set; }
             public int WarnCount { get; set; }
             public int ErrorCount { get; set; }
+
+            /// <summary>
+            /// Number of DISTINCT workers observed for this job — the count of unique "worker-N" lanes
+            /// (restart/relaunch subfolders don't add to it). 0 for a job whose logs carry no worker
+            /// subfolder. Derived from the contributing entries' file paths during the job pass.
+            /// </summary>
+            public int WorkerCount { get; set; }
+
             public IReadOnlyList<long> Ids { get; set; }
 
             /// <summary>Compact human-readable duration (e.g. "5d 16h", "3h 12m", "45s") for the grid.</summary>
@@ -1070,6 +1078,129 @@ namespace NuixLogReviewer.LogRepository
                     return $"{s.Seconds}s";
                 }
             }
+        }
+
+        /// <summary>
+        /// Whole-scope worker-concurrency statistics derived from the computed jobs' lifespans weighted
+        /// by each job's worker count. "Concurrent workers" at an instant = the sum of WorkerCount across
+        /// all jobs whose [FirstSeen, LastSeen] span covers that instant (parallel jobs each hold their
+        /// own workers, so their worker counts add up). Reports the peak (max) concurrent workers and the
+        /// window over which that peak held, the minimum while at least one job was active, and the
+        /// time-weighted average across the union of active time.
+        /// </summary>
+        public sealed class WorkerConcurrencyStats
+        {
+            public int JobCount { get; set; }           // jobs that contributed (WorkerCount > 0)
+            public int TotalWorkers { get; set; }        // sum of WorkerCount over contributing jobs
+            public int PeakConcurrent { get; set; }      // max simultaneous workers across parallel jobs
+            public int MinConcurrent { get; set; }       // min simultaneous workers WHILE any job is active
+            public double AvgConcurrent { get; set; }    // time-weighted mean over the active union
+            public DateTime PeakStart { get; set; }      // first instant the peak was reached
+            public DateTime PeakEnd { get; set; }        // last instant still at the peak
+            public bool HasData => JobCount > 0;
+
+            public string PeakWindowText =>
+                HasData ? $"{PeakStart:yyyy-MM-dd HH:mm:ss} \u2192 {PeakEnd:yyyy-MM-dd HH:mm:ss}" : "";
+
+            /// <summary>One-line summary for the Jobs tab header.</summary>
+            public string SummaryText
+            {
+                get
+                {
+                    if (!HasData) return "No worker-based jobs in the current set.";
+                    return $"Workers across {JobCount} job(s): peak {PeakConcurrent} concurrent, " +
+                           $"min {MinConcurrent}, avg {AvgConcurrent:0.0} \u2014 {TotalWorkers} worker-lanes total.";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Computes whole-scope worker-concurrency stats from the given jobs via a sweep line over their
+        /// lifespans weighted by WorkerCount. Jobs with WorkerCount == 0 (no detected worker lanes) are
+        /// skipped. A zero-length job (FirstSeen == LastSeen) still contributes to the peak at that
+        /// instant but adds no duration to the time-weighted average. Pure/testable: no index access.
+        /// </summary>
+        public static WorkerConcurrencyStats ComputeWorkerConcurrency(IEnumerable<JobInfo> jobs)
+        {
+            var stats = new WorkerConcurrencyStats();
+            if (jobs == null) return stats;
+
+            // Build +/- weighted events at each job's start and end. Intervals are treated as half-open
+            // [start, end): a job ending exactly when another starts does NOT overlap it. A zero-length
+            // job (start == end) is given a 1-tick extent so it still forms a segment and contributes to
+            // the peak at that instant.
+            var events = new List<(long ticks, int delta)>();
+            foreach (var j in jobs)
+            {
+                if (j == null || j.WorkerCount <= 0) continue;
+                stats.JobCount++;
+                stats.TotalWorkers += j.WorkerCount;
+                long s = j.FirstSeen.Ticks;
+                long e = j.LastSeen.Ticks;
+                if (e < s) e = s;      // defensive: never let end precede start
+                if (e == s) e = s + 1; // zero-length job -> minimal positive extent so it has a segment
+                events.Add((s, j.WorkerCount));
+                events.Add((e, -j.WorkerCount));
+            }
+            if (stats.JobCount == 0) return stats;
+
+            // Sort by time; at the SAME tick, apply ENDS (-) before STARTS (+) so adjacent (touching)
+            // jobs don't double-count the shared instant. (Ends sort first because -delta < +delta.)
+            events.Sort((a, b) => a.ticks != b.ticks ? a.ticks.CompareTo(b.ticks) : a.delta.CompareTo(b.delta));
+
+            // Walk the timeline segment by segment. For each gap [prevTicks, ticks) the "running" level
+            // (as it stood BEFORE this event) is the concurrency that held across that whole segment, so
+            // we attribute the segment's duration to that level — accumulating the time-weighted average,
+            // the min WHILE active, and the peak together with the window over which the peak held.
+            int running = 0;
+            int peak = 0;
+            int min = int.MaxValue;
+            long peakStart = 0, peakEnd = 0;
+            bool havePeakWindow = false;
+            double weightedSum = 0;      // sum of (concurrent workers * duration ticks)
+            long activeTicks = 0;        // total ticks during which >=1 worker was active
+            long prevTicks = events[0].ticks;
+
+            foreach (var (ticks, delta) in events)
+            {
+                if (ticks > prevTicks && running > 0)
+                {
+                    long dur = ticks - prevTicks;
+                    weightedSum += (double)running * dur;
+                    activeTicks += dur;
+                    if (running < min) min = running;
+
+                    // The level across THIS segment is `running`; track the peak and its [start, end)
+                    // window. Contiguous segments at the same peak level extend the window.
+                    if (running > peak)
+                    {
+                        peak = running;
+                        peakStart = prevTicks;
+                        peakEnd = ticks;
+                        havePeakWindow = true;
+                    }
+                    else if (running == peak && havePeakWindow && prevTicks == peakEnd)
+                    {
+                        peakEnd = ticks; // extend a contiguous run at the peak level
+                    }
+                    else if (running == peak && !havePeakWindow)
+                    {
+                        peakStart = prevTicks;
+                        peakEnd = ticks;
+                        havePeakWindow = true;
+                    }
+                }
+
+                running += delta;
+                prevTicks = ticks;
+            }
+
+            stats.PeakConcurrent = peak;
+            stats.MinConcurrent = (min == int.MaxValue) ? peak : min;
+            stats.AvgConcurrent = activeTicks > 0 ? weightedSum / activeTicks : peak;
+            stats.PeakStart = new DateTime(peakStart);
+            stats.PeakEnd = new DateTime(peakEnd);
+            return stats;
         }
 
         /// <summary>
@@ -1419,11 +1550,16 @@ namespace NuixLogReviewer.LogRepository
             public long LastTicks;
             public int Warn;
             public int Error;
+            // Distinct worker lanes ("job-<hex>/worker-N") seen for this job. A HashSet so restarts and
+            // the many entries per worker collapse to a single worker identity.
+            public HashSet<string> Workers = new HashSet<string>(StringComparer.Ordinal);
         }
 
         private readonly Dictionary<string, Bucket> _buckets = new Dictionary<string, Bucket>(256);
         private readonly BytesRef _scratch = new BytesRef();
+        private readonly BytesRef _fileScratch = new BytesRef();
         private SortedDocValues _job;
+        private SortedDocValues _file;
         private NumericDocValues _ts;
         private NumericDocValues _lvl;
         private NumericDocValues _id;
@@ -1434,6 +1570,7 @@ namespace NuixLogReviewer.LogRepository
         {
             // job_dv may be absent for a segment where no entry was a worker log.
             _job = context.AtomicReader.GetSortedDocValues("job_dv");
+            _file = context.AtomicReader.GetSortedDocValues("file_dv");
             _ts = context.AtomicReader.GetNumericDocValues("ts_dv");
             _lvl = context.AtomicReader.GetNumericDocValues("lvl_dv");
             _id = context.AtomicReader.GetNumericDocValues("id_dv");
@@ -1461,6 +1598,19 @@ namespace NuixLogReviewer.LogRepository
             if (ticks < bucket.FirstTicks) bucket.FirstTicks = ticks;
             if (ticks > bucket.LastTicks) bucket.LastTicks = ticks;
 
+            // Derive this entry's worker lane from its file path (file_dv) and record it, so the bucket
+            // ends up knowing how many distinct workers the job used. Cheap: only a dictionary/set add.
+            if (_file != null)
+            {
+                int ford = _file.GetOrd(doc);
+                if (ford >= 0)
+                {
+                    _file.LookupOrd(ford, _fileScratch);
+                    string worker = JobIdExtractor.WorkerId(_fileScratch.Utf8ToString());
+                    if (worker != null) bucket.Workers.Add(worker);
+                }
+            }
+
             switch ((int)(_lvl?.Get(doc) ?? 4))
             {
                 case 1: bucket.Warn++; break;
@@ -1484,6 +1634,7 @@ namespace NuixLogReviewer.LogRepository
                     EntryCount = kv.Value.Ids.Count,
                     WarnCount = kv.Value.Warn,
                     ErrorCount = kv.Value.Error,
+                    WorkerCount = kv.Value.Workers.Count,
                     Ids = kv.Value.Ids,
                 });
             }

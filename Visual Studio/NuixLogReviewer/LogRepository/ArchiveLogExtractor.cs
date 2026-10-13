@@ -56,6 +56,14 @@ namespace NuixLogReviewer.LogRepository
             public string ExtractedPath;
             /// <summary>Display name, e.g. "logs-2026-09-20.zip!sub/nuix.log", for the grid's file column.</summary>
             public string DisplayName;
+            /// <summary>
+            /// Human-readable ORIGIN of this log — the real source archive and the path within it, e.g.
+            /// "C:\logs\support.zip \u2192 gateway/nuix.log", or for a nested archive
+            /// "C:\logs\support.zip \u2192 engine.2026-09-20.log.zip \u2192 engine.log". Shown as the
+            /// grid's File-column tooltip so the user sees where the entry really came from, not the
+            /// throwaway temp extraction path. Null/empty for loose (non-archived) files.
+            /// </summary>
+            public string OriginLabel;
         }
 
         /// <summary>True if the path looks like an archive we should inspect (by extension).</summary>
@@ -129,7 +137,10 @@ namespace NuixLogReviewer.LogRepository
             ISet<string> excludedNames,
             Action<string> onWarning = null)
         {
-            return ExtractMatchingLogs(archivePath, extractRoot, namePatterns, excludedNames, onWarning, 0);
+            // Seed the origin label with the archive's REAL full path so the grid tooltip can show where
+            // an extracted log actually came from (the temp extraction path is throwaway). Nested
+            // archives append their inner name to this prefix as recursion descends.
+            return ExtractMatchingLogs(archivePath, extractRoot, namePatterns, excludedNames, onWarning, 0, archivePath);
         }
 
         private static IReadOnlyList<ExtractedLog> ExtractMatchingLogs(
@@ -138,7 +149,8 @@ namespace NuixLogReviewer.LogRepository
             IReadOnlyList<string> namePatterns,
             ISet<string> excludedNames,
             Action<string> onWarning,
-            int depth)
+            int depth,
+            string originPrefix)
         {
             var results = new List<ExtractedLog>();
             if (string.IsNullOrEmpty(archivePath) || !File.Exists(archivePath)) return results;
@@ -158,6 +170,7 @@ namespace NuixLogReviewer.LogRepository
                 OnWarning = onWarning,
                 Results = results,
                 Depth = depth,
+                OriginPrefix = originPrefix,
             };
 
             try
@@ -237,6 +250,7 @@ namespace NuixLogReviewer.LogRepository
             public string DestDir;        // created lazily on first match
             public long ExtractedTotal;
             public int Depth;             // nesting level (0 = the archive the user/dir load picked)
+            public string OriginPrefix;   // real source chain so far, e.g. "C:\logs\support.zip"
         }
 
         /// <summary>
@@ -270,17 +284,26 @@ namespace NuixLogReviewer.LogRepository
 
             try { ctx.ExtractedTotal += new FileInfo(stagedArchive).Length; } catch { /* advisory */ }
 
+            // Extend the origin chain with this nested archive's inner name so logs recovered from it are
+            // labeled against the REAL outer archive path, e.g.
+            // "C:\logs\support.zip \u2192 engine.2026-09-20.log.zip \u2192 engine.log".
+            string nestedOriginPrefix = ctx.OriginPrefix + " \u2192 " + innerName;
+
             var nested = ExtractMatchingLogs(
-                stagedArchive, ctx.ExtractRoot, ctx.NamePatterns, ctx.ExcludedNames, ctx.OnWarning, ctx.Depth + 1);
+                stagedArchive, ctx.ExtractRoot, ctx.NamePatterns, ctx.ExcludedNames, ctx.OnWarning,
+                ctx.Depth + 1, nestedOriginPrefix);
 
             foreach (var log in nested)
             {
                 // Qualify the display name so the grid shows the containing rollup, e.g.
                 // "support.zip!engine-server.2026-09-20.log.zip!engine-server.2026-09-20.log".
+                // The OriginLabel is already fully-qualified by the recursion (it used
+                // nestedOriginPrefix), so carry it through unchanged.
                 ctx.Results.Add(new ExtractedLog
                 {
                     ExtractedPath = log.ExtractedPath,
                     DisplayName = ctx.ArchiveName + "!" + innerName + "!" + StripArchivePrefix(log.DisplayName),
+                    OriginLabel = log.OriginLabel,
                 });
             }
         }
@@ -340,6 +363,9 @@ namespace NuixLogReviewer.LogRepository
             {
                 ExtractedPath = outPath,
                 DisplayName = ctx.ArchiveName + "!" + innerRelPath,
+                // Real origin: the source-archive chain plus the inner path within the (innermost)
+                // archive, e.g. "C:\logs\support.zip \u2192 gateway/nuix.log".
+                OriginLabel = ctx.OriginPrefix + " \u2192 " + innerRelPath,
             });
         }
 

@@ -62,6 +62,13 @@ namespace NuixLogReviewer.GUI
         private static readonly Brush DayDividerBrush = new SolidColorBrush(Color.FromArgb(0x66, 0x55, 0x55, 0x55));
         private static readonly Brush DayLabelBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x55, 0x55, 0x55));
 
+        // "Find within results" matches, plotted as thin magenta ticks so you can see WHERE in the run
+        // the current Find term lands. Magenta (#D500F9) deliberately matches the grid's find-match dot
+        // and reads as a different concept from the INFO/WARN/ERROR bars. Event-time ticks are kept as
+        // data and re-laid-out on resize/redraw; drawn markers are swept by clearBars() like the bars.
+        private System.Collections.Generic.List<long> _findMatchTicks;
+        private static readonly Brush FindMatchBrush = new SolidColorBrush(Color.FromArgb(0xFF, 0xD5, 0x00, 0xF9));
+
         private bool _dragging;
         private double _dragStartX;
         // When true, bar heights are log-compressed (see redraw): height ~ log(1+total), split across
@@ -216,6 +223,9 @@ namespace NuixLogReviewer.GUI
             clearJobElements();
             _selectedWorkflow = null;
             clearWorkflowElements();
+            // Find matches belong to the previous result set; the host re-runs Find after a new set
+            // loads and pushes fresh ticks (or clears). Drop stale ones so they can't briefly mis-plot.
+            _findMatchTicks = null;
             selectionRect.Visibility = Visibility.Collapsed;
             hoverLine.Visibility = Visibility.Collapsed;
             readout.Visibility = Visibility.Collapsed;
@@ -357,6 +367,7 @@ namespace NuixLogReviewer.GUI
 
             applyOverlays();
             drawDayDividers();
+            drawFindMatches();
             drawWorkflowSpans();
             drawJobSpans();
         }
@@ -450,6 +461,44 @@ namespace NuixLogReviewer.GUI
                     Canvas.SetTop(label, Math.Max(0, h - label.DesiredSize.Height - 1));
                     chartCanvas.Children.Add(label);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Draws a thin magenta tick at each "Find within results" match's event time, so the matches
+        /// you step through in the grid also show up as a distribution across the run. Matches outside
+        /// the current charted window (ticksToX returns null) are skipped, and multiple matches landing
+        /// on the SAME pixel column are collapsed to one marker — so a Find that hits thousands of rows
+        /// still draws at most ~width markers rather than flooding the canvas. Markers are plain canvas
+        /// children (swept by clearBars on redraw) placed above the bars but below the interactive
+        /// hover/marker overlays, matching the day-divider treatment.
+        /// </summary>
+        private void drawFindMatches()
+        {
+            if (_findMatchTicks == null || _findMatchTicks.Count == 0) return;
+            double w = chartCanvas.ActualWidth;
+            double h = chartCanvas.ActualHeight;
+            if (w <= 0 || h <= 0) return;
+
+            // Collapse to one marker per integer pixel column to bound element count on large match sets.
+            var columns = new System.Collections.Generic.HashSet<int>();
+            foreach (long ticks in _findMatchTicks)
+            {
+                double? xn = ticksToX(ticks);
+                if (xn == null) continue;
+                int col = (int)Math.Round(xn.Value);
+                if (!columns.Add(col)) continue;
+
+                var line = new Line
+                {
+                    X1 = col, X2 = col, Y1 = 0, Y2 = h,
+                    Stroke = FindMatchBrush,
+                    StrokeThickness = 1,
+                    Opacity = 0.75,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true,
+                };
+                chartCanvas.Children.Add(line);
             }
         }
 
@@ -631,6 +680,19 @@ namespace NuixLogReviewer.GUI
             _visibleStartTicks = startTicks;
             _visibleEndTicks = endTicks;
             applyOverlays();
+        }
+
+        /// <summary>
+        /// Plots the current "Find within results" matches on the chart as thin magenta ticks, so the
+        /// matches you can step through in the grid are also visible as a distribution across the run.
+        /// Pass the matches' event-time ticks; pass null/empty to clear. Only the data is stored here —
+        /// the actual markers are drawn in <see cref="drawFindMatches"/> on the next redraw, so they
+        /// re-lay-out on resize and respect the current zoom window.
+        /// </summary>
+        public void SetFindMatches(System.Collections.Generic.IEnumerable<long> ticks)
+        {
+            _findMatchTicks = ticks == null ? null : new System.Collections.Generic.List<long>(ticks);
+            redraw();
         }
 
         /// <summary>Positions the selection marker and visible-range band based on current data/size.</summary>

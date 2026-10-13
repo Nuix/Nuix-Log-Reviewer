@@ -84,7 +84,7 @@ namespace NuixLogReviewer.GUI
                 txtSource.Text = entry.Source;
                 txtChannel.Text = entry.Channel;
                 txtContent.Text = entry.Content;
-                txtFilePath.Text = entry.FilePath;
+                txtFilePath.Text = entry.DisplayPath;
                 flagList.ItemsSource = ToFlagViews(entry.Flags);
                 btnCopyLogLine.IsEnabled = true;
             }
